@@ -329,6 +329,18 @@ function fmtDateShort(str) {
  *  ANALYTICS
  * -------------------------------------------------------------------------- */
 
+/* Specific definition of "agency commission" for Gold Finance:
+ *   = Pmt ComSA (MG, WU, RIA)      ← commission perçue sur les paiements
+ *   + Env GChgSA WU                ← charge SA conservée sur les envois WU
+ *   + Env ComSA MG                 ← commission SA sur les envois MG
+ * Cancellations and refunds are excluded. */
+function isAgencyCommission(r) {
+  if (r.kind === "Annulation" || r.kind === "Remboursement") return false;
+  if (r.direction === "Paiement" && r.subtype === "Commission") return true;
+  if (r.direction === "Envoi" && r.subtype === "Charge groupe" && r.network === "Western Union") return true;
+  if (r.direction === "Envoi" && r.subtype === "Commission" && r.network === "MoneyGram") return true;
+  return false;
+}
 function buildAnalytics(rows) {
   if (!rows.length) return null;
 
@@ -343,8 +355,9 @@ function buildAnalytics(rows) {
   const totalRows = rows.filter(r => r.subtype === "Total" && (r.direction === "Paiement" || r.direction === "Envoi"));
   const volumeTraite = totalRows.reduce((s, r) => s + Math.abs(r.amount), 0);
 
-  // Commissions (ComSA) — abs sum
-  const comRows = rows.filter(r => r.subtype === "Commission");
+  // Commissions agence — définition spécifique Gold Finance
+  // (voir isAgencyCommission ci-dessus)
+  const comRows = rows.filter(isAgencyCommission);
   const totalCommissions = comRows.reduce((s, r) => s + Math.abs(r.amount), 0);
 
   // Charges groupe (GChgSA) — abs sum
@@ -368,7 +381,7 @@ function buildAnalytics(rows) {
     const envRowsTotal = netRows.filter(r => r.direction === "Envoi" && r.subtype === "Total");
     const pmtTotal = pmtRowsTotal.reduce((s, r) => s + r.amount, 0);
     const envTotal = envRowsTotal.reduce((s, r) => s + r.amount, 0);
-    const commission = netRows.filter(r => r.subtype === "Commission").reduce((s, r) => s + Math.abs(r.amount), 0);
+    const commission = netRows.filter(isAgencyCommission).reduce((s, r) => s + Math.abs(r.amount), 0);
     const charge = netRows.filter(r => r.subtype === "Charge groupe").reduce((s, r) => s + Math.abs(r.amount), 0);
     const count = rows.filter(r => r.network === net).length;
     return {
@@ -924,7 +937,7 @@ function GoldFinanceAnalyse() {
     value: fmtNum(a.totalCommissions, {
       unit
     }),
-    sublabel: `Somme des ComSA · charges groupe ${fmtCompact(a.totalCharges)}`,
+    sublabel: "Pmt ComSA (3 r\xE9seaux) + Env GChgSA WU + Env ComSA MG",
     accent: C.credit
   }), /*#__PURE__*/React.createElement(Tile, {
     label: "Variation du solde",
