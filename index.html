@@ -9,7 +9,7 @@
   <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 
-  <!-- PropTypes (required by some Recharts builds) -->
+  <!-- PropTypes (peer dep of Recharts) -->
   <script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
 
   <!-- Recharts (UMD) -->
@@ -17,9 +17,6 @@
 
   <!-- PapaParse for CSV -->
   <script crossorigin src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-
-  <!-- Babel-standalone to transpile JSX in the browser -->
-  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -30,7 +27,6 @@
       font-family: 'Inter', system-ui, -apple-system, sans-serif;
       -webkit-font-smoothing: antialiased;
     }
-    /* Loading state visible before React mounts */
     #root:empty::before {
       content: "Chargement de l'outil…";
       display: block;
@@ -41,24 +37,49 @@
       letter-spacing: 0.1em;
       text-transform: uppercase;
     }
+    /* Error banner shown if something fails to load */
+    #error-banner {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: #FCE8EA;
+      color: #8B2635;
+      padding: 12px 20px;
+      font-family: Inter, system-ui, sans-serif;
+      font-size: 13px;
+      border-bottom: 1px solid #8B2635;
+      z-index: 9999;
+    }
   </style>
 </head>
 <body>
+  <div id="error-banner"></div>
   <div id="root"></div>
 
-  <script type="text/babel" data-presets="react">
-/* eslint-disable */
+  <script>
+    // Show error banner if the page silently fails
+    window.addEventListener('error', function(e) {
+      var banner = document.getElementById('error-banner');
+      if (banner) {
+        banner.style.display = 'block';
+        banner.textContent = 'Erreur de chargement : ' + (e.message || e.error || 'inconnue') + ' — ouvrez la console (F12) pour le détail.';
+      }
+    });
+  </script>
 
-// Pull globals from the CDN libraries
-const { useState, useMemo, useRef, useCallback } = React;
+  <script>
+/* ============================================================================
+ *  Pull globals from the CDN libraries (React, ReactDOM, Recharts, Papa)
+ * ========================================================================== */
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line, Legend,
 } = Recharts;
-// Papa is already global as window.Papa
+// Papa is available as window.Papa
 
 /* ============================================================================
- *  COMPONENT CODE — pasted verbatim from the React source
+ *  COMPILED APP (JSX → JS via Babel, embedded at build time)
  * ========================================================================== */
 
 /* ----------------------------------------------------------------------------
@@ -76,18 +97,20 @@ const C = {
   hairline: "#D9D2C2",
   credit: "#1F6F4F",
   debit: "#8B2635",
-  mg: "#B8860B", // MoneyGram — gold
-  wu: "#3B5A7A", // Western Union — slate
-  ri: "#6B3B5F", // RIA — aubergine
-  cash: "#5C5042", // Cash deposits — warm umber
+  mg: "#B8860B",
+  // MoneyGram — gold
+  wu: "#3B5A7A",
+  // Western Union — slate
+  ri: "#6B3B5F",
+  // RIA — aubergine
+  cash: "#5C5042" // Cash deposits — warm umber
 };
-
 const NETWORK_COLOR = {
   MoneyGram: C.mg,
   "Western Union": C.wu,
   RIA: C.ri,
   Espèces: C.cash,
-  Autre: C.muted,
+  Autre: C.muted
 };
 
 /* ----------------------------------------------------------------------------
@@ -97,7 +120,9 @@ const NETWORK_COLOR = {
 // Decode an ArrayBuffer trying UTF-8 first then ISO-8859-1 (Latin-1).
 // Many bank exports are still Latin-1.
 function decodeBuffer(buffer) {
-  const utf8 = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+  const utf8 = new TextDecoder("utf-8", {
+    fatal: false
+  }).decode(buffer);
   // Replacement char U+FFFD indicates UTF-8 decoding failed for some bytes
   if (utf8.includes("\uFFFD")) {
     return new TextDecoder("iso-8859-1").decode(buffer);
@@ -108,9 +133,7 @@ function decodeBuffer(buffer) {
 // "1 590 892" -> 1590892    "-441 869" -> -441869    handles NBSP / NNBSP
 function parseAmount(str) {
   if (str == null) return 0;
-  const cleaned = String(str)
-    .replace(/[\s\u00A0\u202F]/g, "")
-    .replace(",", ".");
+  const cleaned = String(str).replace(/[\s\u00A0\u202F]/g, "").replace(",", ".");
   const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : 0;
 }
@@ -134,17 +157,14 @@ function dateKey(str) {
 
 // Categorise a Libellé into { kind, direction, network, subtype }.
 function parseLibelle(libelle) {
-  if (!libelle)
-    return {
-      kind: "Autre",
-      direction: "—",
-      network: "Autre",
-      subtype: "—",
-      networkCode: "?",
-    };
-
+  if (!libelle) return {
+    kind: "Autre",
+    direction: "—",
+    network: "Autre",
+    subtype: "—",
+    networkCode: "?"
+  };
   const raw = String(libelle).trim();
-
   if (/^VERSEMENT\s+ESPECES/i.test(raw)) {
     const m = raw.match(/PAR:\s*(.+)$/i);
     return {
@@ -153,14 +173,12 @@ function parseLibelle(libelle) {
       network: "Espèces",
       networkCode: "CASH",
       subtype: "Versement espèces",
-      counterparty: m ? m[1].trim() : "",
+      counterparty: m ? m[1].trim() : ""
     };
   }
-
   let str = raw;
   let kind = "Standard";
   let isRmb = false;
-
   if (/^ANNUL\s/i.test(str)) {
     kind = "Annulation";
     str = str.replace(/^ANNUL\s+/i, "");
@@ -175,7 +193,6 @@ function parseLibelle(libelle) {
   let direction, subRaw, code;
   const stdMatch = str.match(/^(Pmt|Env)\s+(\w+)\s+(MG|WU|RI)\b/i);
   const rmbMatch = isRmb && str.match(/^(\w+)\s+(MG|WU|RI)\b/i);
-
   if (stdMatch) {
     direction = stdMatch[1].toLowerCase() === "pmt" ? "Paiement" : "Envoi";
     subRaw = stdMatch[2];
@@ -190,24 +207,19 @@ function parseLibelle(libelle) {
       direction: "—",
       network: "Autre",
       networkCode: "?",
-      subtype: raw.slice(0, 24),
+      subtype: raw.slice(0, 24)
     };
   }
-
   const sub = subRaw.toLowerCase();
-  const subtype =
-    sub === "total"
-      ? "Total"
-      : sub === "comsa" || sub === "com"
-      ? "Commission"
-      : sub === "gchgsa"
-      ? "Charge groupe"
-      : subRaw;
-
-  const network =
-    code === "MG" ? "MoneyGram" : code === "WU" ? "Western Union" : "RIA";
-
-  return { kind, direction, network, networkCode: code, subtype };
+  const subtype = sub === "total" ? "Total" : sub === "comsa" || sub === "com" ? "Commission" : sub === "gchgsa" ? "Charge groupe" : subRaw;
+  const network = code === "MG" ? "MoneyGram" : code === "WU" ? "Western Union" : "RIA";
+  return {
+    kind,
+    direction,
+    network,
+    networkCode: code,
+    subtype
+  };
 }
 
 /* Parse the full statement. Returns { meta, rows } */
@@ -215,7 +227,12 @@ function parseStatement(text) {
   const lines = text.split(/\r?\n/);
 
   // Pull metadata from header lines before the column header row
-  const meta = { client: "", account: "", period: "", currency: "" };
+  const meta = {
+    client: "",
+    account: "",
+    period: "",
+    currency: ""
+  };
   let headerIdx = -1;
   for (let i = 0; i < lines.length; i++) {
     const L = lines[i];
@@ -225,9 +242,7 @@ function parseStatement(text) {
     }
     const clientM = L.match(/Client\s*:\s*"?([^"]+?)"?\s*$/i);
     if (clientM) meta.client = clientM[1].trim();
-    const accountM = L.match(
-      /Activit[eé] pour le num[eé]ro de compte\s+(\S+)\s*(\S+)?/i
-    );
+    const accountM = L.match(/Activit[eé] pour le num[eé]ro de compte\s+(\S+)\s*(\S+)?/i);
     if (accountM) {
       meta.account = accountM[1].trim();
       meta.currency = (accountM[2] || "").replace(/"/g, "").trim();
@@ -235,9 +250,12 @@ function parseStatement(text) {
     const periodM = L.match(/De\s+(.+?)\s+au\s+(.+?)"?\s*$/i);
     if (periodM) meta.period = `${periodM[1].trim()} → ${periodM[2].trim()}`;
   }
-
   if (headerIdx === -1) {
-    return { meta, rows: [], error: "Ligne d'en-tête introuvable." };
+    return {
+      meta,
+      rows: [],
+      error: "Ligne d'en-tête introuvable."
+    };
   }
 
   // Parse from the header line forward using PapaParse
@@ -245,32 +263,31 @@ function parseStatement(text) {
   const result = Papa.parse(dataText, {
     header: true,
     skipEmptyLines: true,
-    transformHeader: (h) => h.trim(),
+    transformHeader: h => h.trim()
   });
-
-  const rows = result.data
-    .filter((r) => r && r["Date de l'opération"] && r["Libellé"])
-    .map((r, idx) => {
-      const libelle = r["Libellé"] || "";
-      const cat = parseLibelle(libelle);
-      const amount = parseAmount(r["Montant"]);
-      const balance = parseAmount(r["Solde"]);
-      const opDate = r["Date de l'opération"];
-      const valDate = r["Date Valeur"];
-      return {
-        idx,
-        opDate,
-        valDate,
-        opDateKey: dateKey(opDate),
-        ref: r["Référence"] || "",
-        amount,
-        balance,
-        libelle,
-        ...cat,
-      };
-    });
-
-  return { meta, rows };
+  const rows = result.data.filter(r => r && r["Date de l'opération"] && r["Libellé"]).map((r, idx) => {
+    const libelle = r["Libellé"] || "";
+    const cat = parseLibelle(libelle);
+    const amount = parseAmount(r["Montant"]);
+    const balance = parseAmount(r["Solde"]);
+    const opDate = r["Date de l'opération"];
+    const valDate = r["Date Valeur"];
+    return {
+      idx,
+      opDate,
+      valDate,
+      opDateKey: dateKey(opDate),
+      ref: r["Référence"] || "",
+      amount,
+      balance,
+      libelle,
+      ...cat
+    };
+  });
+  return {
+    meta,
+    rows
+  };
 }
 
 /* ----------------------------------------------------------------------------
@@ -279,17 +296,18 @@ function parseStatement(text) {
 
 const NNBSP = "\u202F";
 function fmtNum(n, opts = {}) {
-  const { unit = "", sign = "auto" } = opts;
+  const {
+    unit = "",
+    sign = "auto"
+  } = opts;
   if (!Number.isFinite(n)) return "—";
   const negative = n < 0;
   const abs = Math.abs(Math.round(n));
   const grouped = abs.toString().replace(/\B(?=(\d{3})+(?!\d))/g, NNBSP);
   let prefix = "";
-  if (sign === "always") prefix = negative ? "−" : "+";
-  else if (sign === "auto") prefix = negative ? "−" : "";
+  if (sign === "always") prefix = negative ? "−" : "+";else if (sign === "auto") prefix = negative ? "−" : "";
   return `${prefix}${grouped}${unit ? NNBSP + unit : ""}`;
 }
-
 function fmtCompact(n) {
   if (!Number.isFinite(n)) return "—";
   const abs = Math.abs(n);
@@ -298,11 +316,13 @@ function fmtCompact(n) {
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(0)} k`;
   return `${sign}${Math.round(abs)}`;
 }
-
 function fmtDateShort(str) {
   const d = parseDate(str);
   if (!d) return str;
-  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+  return d.toLocaleDateString("fr-FR", {
+    day: "2-digit",
+    month: "short"
+  });
 }
 
 /* ----------------------------------------------------------------------------
@@ -313,28 +333,22 @@ function buildAnalytics(rows) {
   if (!rows.length) return null;
 
   // Sort oldest → newest for time series
-  const chronological = [...rows].sort((a, b) =>
-    a.opDateKey.localeCompare(b.opDateKey)
-  );
+  const chronological = [...rows].sort((a, b) => a.opDateKey.localeCompare(b.opDateKey));
 
   // Versements espèces
-  const versements = rows.filter((r) => r.kind === "Versement");
+  const versements = rows.filter(r => r.kind === "Versement");
   const totalVersements = versements.reduce((s, r) => s + r.amount, 0);
 
   // Volume traité = sum of |amount| over "Total" rows for Pmt + Env (excludes commissions, charges)
-  const totalRows = rows.filter(
-    (r) =>
-      r.subtype === "Total" &&
-      (r.direction === "Paiement" || r.direction === "Envoi")
-  );
+  const totalRows = rows.filter(r => r.subtype === "Total" && (r.direction === "Paiement" || r.direction === "Envoi"));
   const volumeTraite = totalRows.reduce((s, r) => s + Math.abs(r.amount), 0);
 
   // Commissions (ComSA) — abs sum
-  const comRows = rows.filter((r) => r.subtype === "Commission");
+  const comRows = rows.filter(r => r.subtype === "Commission");
   const totalCommissions = comRows.reduce((s, r) => s + Math.abs(r.amount), 0);
 
   // Charges groupe (GChgSA) — abs sum
-  const chgRows = rows.filter((r) => r.subtype === "Charge groupe");
+  const chgRows = rows.filter(r => r.subtype === "Charge groupe");
   const totalCharges = chgRows.reduce((s, r) => s + Math.abs(r.amount), 0);
 
   // Net flow over the period: last balance - first balance (chronologically)
@@ -343,83 +357,69 @@ function buildAnalytics(rows) {
   const netSolde = lastBalance - firstBalance;
 
   // Crédits / Débits split
-  const credits = rows
-    .filter((r) => r.amount > 0)
-    .reduce((s, r) => s + r.amount, 0);
-  const debits = rows
-    .filter((r) => r.amount < 0)
-    .reduce((s, r) => s + Math.abs(r.amount), 0);
+  const credits = rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+  const debits = rows.filter(r => r.amount < 0).reduce((s, r) => s + Math.abs(r.amount), 0);
 
   // By network breakdown
   const networks = ["MoneyGram", "Western Union", "RIA"];
-  const byNetwork = networks.map((net) => {
-    const netRows = rows.filter((r) => r.network === net && r.kind !== "Annulation" && r.kind !== "Remboursement");
-    const pmtRowsTotal = netRows.filter((r) => r.direction === "Paiement" && r.subtype === "Total");
-    const envRowsTotal = netRows.filter((r) => r.direction === "Envoi" && r.subtype === "Total");
+  const byNetwork = networks.map(net => {
+    const netRows = rows.filter(r => r.network === net && r.kind !== "Annulation" && r.kind !== "Remboursement");
+    const pmtRowsTotal = netRows.filter(r => r.direction === "Paiement" && r.subtype === "Total");
+    const envRowsTotal = netRows.filter(r => r.direction === "Envoi" && r.subtype === "Total");
     const pmtTotal = pmtRowsTotal.reduce((s, r) => s + r.amount, 0);
     const envTotal = envRowsTotal.reduce((s, r) => s + r.amount, 0);
-    const commission = netRows
-      .filter((r) => r.subtype === "Commission")
-      .reduce((s, r) => s + Math.abs(r.amount), 0);
-    const charge = netRows
-      .filter((r) => r.subtype === "Charge groupe")
-      .reduce((s, r) => s + Math.abs(r.amount), 0);
-    const count = rows.filter((r) => r.network === net).length;
+    const commission = netRows.filter(r => r.subtype === "Commission").reduce((s, r) => s + Math.abs(r.amount), 0);
+    const charge = netRows.filter(r => r.subtype === "Charge groupe").reduce((s, r) => s + Math.abs(r.amount), 0);
+    const count = rows.filter(r => r.network === net).length;
     return {
       network: net,
-      paiements: pmtTotal, // positive amounts = inflows from network
+      paiements: pmtTotal,
+      // positive amounts = inflows from network
       paiementsCount: pmtRowsTotal.length,
       paiementsMoyen: pmtRowsTotal.length ? pmtTotal / pmtRowsTotal.length : 0,
-      envois: Math.abs(envTotal), // shown as positive volume sent out
+      envois: Math.abs(envTotal),
+      // shown as positive volume sent out
       envoisCount: envRowsTotal.length,
       envoisMoyen: envRowsTotal.length ? Math.abs(envTotal) / envRowsTotal.length : 0,
       commission,
       charge,
       count,
-      volume: pmtTotal + Math.abs(envTotal),
+      volume: pmtTotal + Math.abs(envTotal)
     };
   });
 
   // Daily activity: sum of |Total| amounts by network
   const dayMap = new Map();
-  rows
-    .filter((r) => r.subtype === "Total" && (r.direction === "Paiement" || r.direction === "Envoi"))
-    .forEach((r) => {
-      if (!dayMap.has(r.opDateKey)) {
-        dayMap.set(r.opDateKey, {
-          dateKey: r.opDateKey,
-          dateLabel: fmtDateShort(r.opDate),
-          MoneyGram: 0,
-          "Western Union": 0,
-          RIA: 0,
-        });
-      }
-      const slot = dayMap.get(r.opDateKey);
-      if (slot[r.network] != null) slot[r.network] += Math.abs(r.amount);
-    });
-  const dailyVolume = [...dayMap.values()].sort((a, b) =>
-    a.dateKey.localeCompare(b.dateKey)
-  );
+  rows.filter(r => r.subtype === "Total" && (r.direction === "Paiement" || r.direction === "Envoi")).forEach(r => {
+    if (!dayMap.has(r.opDateKey)) {
+      dayMap.set(r.opDateKey, {
+        dateKey: r.opDateKey,
+        dateLabel: fmtDateShort(r.opDate),
+        MoneyGram: 0,
+        "Western Union": 0,
+        RIA: 0
+      });
+    }
+    const slot = dayMap.get(r.opDateKey);
+    if (slot[r.network] != null) slot[r.network] += Math.abs(r.amount);
+  });
+  const dailyVolume = [...dayMap.values()].sort((a, b) => a.dateKey.localeCompare(b.dateKey));
 
   // Daily balance evolution (last balance recorded per day, in chronological order)
   const balanceMap = new Map();
-  chronological.forEach((r) => {
+  chronological.forEach(r => {
     balanceMap.set(r.opDateKey, {
       dateKey: r.opDateKey,
       dateLabel: fmtDateShort(r.opDate),
-      solde: r.balance,
+      solde: r.balance
     });
   });
-  const dailyBalance = [...balanceMap.values()].sort((a, b) =>
-    a.dateKey.localeCompare(b.dateKey)
-  );
+  const dailyBalance = [...balanceMap.values()].sort((a, b) => a.dateKey.localeCompare(b.dateKey));
 
   // All libellé categories (the 20+ unique patterns)
   const catMap = new Map();
-  rows.forEach((r) => {
-    const key = [r.kind, r.direction, r.subtype, r.network]
-      .filter((x) => x && x !== "—")
-      .join(" · ");
+  rows.forEach(r => {
+    const key = [r.kind, r.direction, r.subtype, r.network].filter(x => x && x !== "—").join(" · ");
     if (!catMap.has(key)) {
       catMap.set(key, {
         category: key,
@@ -429,7 +429,7 @@ function buildAnalytics(rows) {
         network: r.network,
         count: 0,
         sum: 0,
-        sumAbs: 0,
+        sumAbs: 0
       });
     }
     const slot = catMap.get(key);
@@ -440,13 +440,8 @@ function buildAnalytics(rows) {
   const categories = [...catMap.values()].sort((a, b) => b.sumAbs - a.sumAbs);
 
   // Annulations + Remboursements
-  const annulations = rows
-    .filter((r) => r.kind === "Annulation")
-    .reduce((s, r) => s + Math.abs(r.amount), 0);
-  const remboursements = rows
-    .filter((r) => r.kind === "Remboursement")
-    .reduce((s, r) => s + Math.abs(r.amount), 0);
-
+  const annulations = rows.filter(r => r.kind === "Annulation").reduce((s, r) => s + Math.abs(r.amount), 0);
+  const remboursements = rows.filter(r => r.kind === "Remboursement").reduce((s, r) => s + Math.abs(r.amount), 0);
   return {
     rowCount: rows.length,
     firstBalance,
@@ -464,7 +459,7 @@ function buildAnalytics(rows) {
     dailyBalance,
     categories,
     annulations,
-    remboursements,
+    remboursements
   };
 }
 
@@ -479,87 +474,76 @@ const fontStyle = `
   .ff-body { font-family: 'Inter', system-ui, sans-serif; }
   .ff-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 `;
-
-function Eyebrow({ children, color = C.muted }) {
-  return (
-    <div
-      className="ff-body"
-      style={{
-        fontSize: 11,
-        letterSpacing: "0.12em",
-        textTransform: "uppercase",
-        color,
-        fontWeight: 500,
-      }}
-    >
-      {children}
-    </div>
-  );
+function Eyebrow({
+  children,
+  color = C.muted
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "ff-body",
+    style: {
+      fontSize: 11,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      color,
+      fontWeight: 500
+    }
+  }, children);
 }
-
-function Tile({ label, value, sublabel, accent }) {
-  return (
-    <div
-      style={{
-        background: C.paper,
-        border: `1px solid ${C.hairline}`,
-        padding: "20px 22px",
-        position: "relative",
-      }}
-    >
-      <Eyebrow>{label}</Eyebrow>
-      <div
-        className="ff-display ff-mono"
-        style={{
-          fontSize: 30,
-          marginTop: 10,
-          color: C.ink,
-          fontWeight: 500,
-          lineHeight: 1.05,
-          fontFamily:
-            "'JetBrains Mono', ui-monospace, monospace",
-          fontVariantNumeric: "tabular-nums",
-        }}
-      >
-        {value}
-      </div>
-      {sublabel && (
-        <div
-          className="ff-body"
-          style={{ marginTop: 8, fontSize: 12, color: C.muted }}
-        >
-          {sublabel}
-        </div>
-      )}
-      {accent && (
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: 3,
-            height: "100%",
-            background: accent,
-          }}
-        />
-      )}
-    </div>
-  );
+function Tile({
+  label,
+  value,
+  sublabel,
+  accent
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.paper,
+      border: `1px solid ${C.hairline}`,
+      padding: "20px 22px",
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, label), /*#__PURE__*/React.createElement("div", {
+    className: "ff-display ff-mono",
+    style: {
+      fontSize: 30,
+      marginTop: 10,
+      color: C.ink,
+      fontWeight: 500,
+      lineHeight: 1.05,
+      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, value), sublabel && /*#__PURE__*/React.createElement("div", {
+    className: "ff-body",
+    style: {
+      marginTop: 8,
+      fontSize: 12,
+      color: C.muted
+    }
+  }, sublabel), accent && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      width: 3,
+      height: "100%",
+      background: accent
+    }
+  }));
 }
-
-function NetworkSwatch({ network }) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        width: 8,
-        height: 8,
-        background: NETWORK_COLOR[network] || C.muted,
-        marginRight: 8,
-        verticalAlign: "middle",
-      }}
-    />
-  );
+function NetworkSwatch({
+  network
+}) {
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 8,
+      height: 8,
+      background: NETWORK_COLOR[network] || C.muted,
+      marginRight: 8,
+      verticalAlign: "middle"
+    }
+  });
 }
 
 /* ----------------------------------------------------------------------------
@@ -570,37 +554,36 @@ function NetworkSwatch({ network }) {
  *  STORAGE — localStorage persistence
  * -------------------------------------------------------------------------- */
 const STORAGE_KEY = "goldfinance:files:v1";
-
 function loadStoredFiles() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const stored = JSON.parse(raw);
     if (!Array.isArray(stored)) return [];
-    return stored
-      .map((f) => {
-        try {
-          const parsed = parseStatement(f.csvText);
-          if (!parsed.rows.length) return null;
-          return { ...f, parsed };
-        } catch (e) {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    return stored.map(f => {
+      try {
+        const parsed = parseStatement(f.csvText);
+        if (!parsed.rows.length) return null;
+        return {
+          ...f,
+          parsed
+        };
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean);
   } catch (e) {
     return [];
   }
 }
-
 function persistFiles(files) {
   try {
-    const toStore = files.map((f) => ({
+    const toStore = files.map(f => ({
       id: f.id,
       name: f.name,
       csvText: f.csvText,
       enabled: f.enabled,
-      uploadedAt: f.uploadedAt,
+      uploadedAt: f.uploadedAt
     }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
     return true;
@@ -609,43 +592,36 @@ function persistFiles(files) {
     return false;
   }
 }
-
 function makeId() {
   return `f${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
 /* Combined metadata when several files are active. */
 function combinedMeta(enabledFiles) {
-  if (enabledFiles.length === 0)
-    return { client: "", account: "", currency: "", period: "" };
+  if (enabledFiles.length === 0) return {
+    client: "",
+    account: "",
+    currency: "",
+    period: ""
+  };
   if (enabledFiles.length === 1) return enabledFiles[0].parsed.meta;
-
-  const months = [
-    "jan", "fév", "mar", "avr", "mai", "juin",
-    "juil", "août", "sep", "oct", "nov", "déc",
-  ];
-  const fmt = (k) => {
+  const months = ["jan", "fév", "mar", "avr", "mai", "juin", "juil", "août", "sep", "oct", "nov", "déc"];
+  const fmt = k => {
     if (!k) return "";
     const [y, m, d] = k.split("-");
     return `${parseInt(d, 10)} ${months[parseInt(m, 10) - 1]} ${y}`;
   };
-
-  const allKeys = enabledFiles
-    .flatMap((f) => f.parsed.rows.map((r) => r.opDateKey))
-    .filter(Boolean)
-    .sort();
+  const allKeys = enabledFiles.flatMap(f => f.parsed.rows.map(r => r.opDateKey)).filter(Boolean).sort();
   const start = allKeys[0];
   const end = allKeys[allKeys.length - 1];
-
-  const clients = [...new Set(enabledFiles.map((f) => f.parsed.meta.client).filter(Boolean))];
-  const accounts = [...new Set(enabledFiles.map((f) => f.parsed.meta.account).filter(Boolean))];
+  const clients = [...new Set(enabledFiles.map(f => f.parsed.meta.client).filter(Boolean))];
+  const accounts = [...new Set(enabledFiles.map(f => f.parsed.meta.account).filter(Boolean))];
   const currency = enabledFiles[0].parsed.meta.currency;
-
   return {
     client: clients.length === 1 ? clients[0] : clients.join(" · "),
     account: accounts.length === 1 ? accounts[0] : `${accounts.length} comptes`,
     currency,
-    period: start && end ? `${fmt(start)} → ${fmt(end)}` : "",
+    period: start && end ? `${fmt(start)} → ${fmt(end)}` : ""
   };
 }
 
@@ -663,7 +639,6 @@ function GoldFinanceAnalyse() {
   const [filterNetwork, setFilterNetwork] = useState("Tous");
   const [filterKind, setFilterKind] = useState("Tous");
   const [storageWarning, setStorageWarning] = useState(false);
-
   const fileInputRef = useRef(null);
 
   // Persist on every change to the files array
@@ -671,12 +646,11 @@ function GoldFinanceAnalyse() {
     const ok = persistFiles(files);
     setStorageWarning(!ok && files.length > 0);
   }, [files]);
-
-  const handleFile = useCallback((file) => {
+  const handleFile = useCallback(file => {
     if (!file) return;
     setError("");
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = e => {
       try {
         const text = decodeBuffer(e.target.result);
         const result = parseStatement(text);
@@ -694,14 +668,17 @@ function GoldFinanceAnalyse() {
           csvText: text,
           parsed: result,
           enabled: true,
-          uploadedAt: new Date().toISOString(),
+          uploadedAt: new Date().toISOString()
         };
-        setFiles((prev) => {
+        setFiles(prev => {
           // Replace existing entry with same filename, else append
-          const existing = prev.findIndex((f) => f.name === newFile.name);
+          const existing = prev.findIndex(f => f.name === newFile.name);
           if (existing >= 0) {
             const next = [...prev];
-            next[existing] = { ...newFile, enabled: prev[existing].enabled };
+            next[existing] = {
+              ...newFile,
+              enabled: prev[existing].enabled
+            };
             return next;
           }
           return [...prev, newFile];
@@ -713,1028 +690,985 @@ function GoldFinanceAnalyse() {
     reader.onerror = () => setError("Impossible de lire le fichier.");
     reader.readAsArrayBuffer(file);
   }, []);
-
-  const toggleFile = useCallback((id) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.id === id ? { ...f, enabled: !f.enabled } : f))
-    );
+  const toggleFile = useCallback(id => {
+    setFiles(prev => prev.map(f => f.id === id ? {
+      ...f,
+      enabled: !f.enabled
+    } : f));
   }, []);
-
-  const removeFile = useCallback((id) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+  const removeFile = useCallback(id => {
+    setFiles(prev => prev.filter(f => f.id !== id));
   }, []);
-
-  const enabledFiles = useMemo(() => files.filter((f) => f.enabled), [files]);
-
-  const allRows = useMemo(
-    () => enabledFiles.flatMap((f) => f.parsed.rows),
-    [enabledFiles]
-  );
-
-  const analytics = useMemo(
-    () => (allRows.length ? buildAnalytics(allRows) : null),
-    [allRows]
-  );
-
+  const enabledFiles = useMemo(() => files.filter(f => f.enabled), [files]);
+  const allRows = useMemo(() => enabledFiles.flatMap(f => f.parsed.rows), [enabledFiles]);
+  const analytics = useMemo(() => allRows.length ? buildAnalytics(allRows) : null, [allRows]);
   const meta = useMemo(() => combinedMeta(enabledFiles), [enabledFiles]);
-
   const filteredRows = useMemo(() => {
     if (!allRows.length) return [];
-    return allRows.filter((r) => {
+    return allRows.filter(r => {
       if (filterNetwork !== "Tous" && r.network !== filterNetwork) return false;
       if (filterKind !== "Tous" && r.kind !== filterKind) return false;
       if (search) {
         const q = search.toLowerCase();
-        if (
-          !r.libelle.toLowerCase().includes(q) &&
-          !r.ref.toLowerCase().includes(q)
-        )
-          return false;
+        if (!r.libelle.toLowerCase().includes(q) && !r.ref.toLowerCase().includes(q)) return false;
       }
       return true;
     });
   }, [allRows, search, filterNetwork, filterKind]);
-
   const handleAddClick = () => fileInputRef.current?.click();
-
   const hasFiles = files.length > 0;
   const hasEnabled = enabledFiles.length > 0;
   const a = analytics;
   const unit = meta.currency || "XOF";
 
   /* Hidden file input — shared across all states */
-  const hiddenInput = (
-    <input
-      ref={fileInputRef}
-      type="file"
-      accept=".csv,text/csv"
-      style={{ display: "none" }}
-      onChange={(e) => {
-        const file = e.target.files?.[0];
-        handleFile(file);
-        e.target.value = ""; // allow re-upload of same filename
-      }}
-    />
-  );
+  const hiddenInput = /*#__PURE__*/React.createElement("input", {
+    ref: fileInputRef,
+    type: "file",
+    accept: ".csv,text/csv",
+    style: {
+      display: "none"
+    },
+    onChange: e => {
+      const file = e.target.files?.[0];
+      handleFile(file);
+      e.target.value = ""; // allow re-upload of same filename
+    }
+  });
 
   /* --------- EMPTY STATE (no files at all) --------- */
   if (!hasFiles) {
-    return (
-      <div
-        className="ff-body"
-        style={{
-          minHeight: "100vh",
-          background: C.paper,
-          color: C.ink,
-          padding: "40px 24px",
-        }}
-      >
-        <style>{fontStyle}</style>
-        <Masthead />
-
-        <div style={{ maxWidth: 720, margin: "60px auto 0" }}>
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(false);
-              const file = e.dataTransfer.files?.[0];
-              handleFile(file);
-            }}
-            onClick={handleAddClick}
-            style={{
-              border: `1.5px dashed ${dragOver ? C.ink : C.muted}`,
-              background: dragOver ? C.paperDeep : "transparent",
-              padding: "64px 32px",
-              textAlign: "center",
-              cursor: "pointer",
-              transition: "all 0.15s ease",
-            }}
-          >
-            <div
-              className="ff-display"
-              style={{ fontSize: 28, color: C.ink, fontWeight: 500 }}
-            >
-              Glissez votre extrait bancaire ici
-            </div>
-            <div style={{ marginTop: 12, color: C.muted, fontSize: 14 }}>
-              ou cliquez pour le sélectionner — format CSV
-            </div>
-            <div
-              style={{
-                marginTop: 28,
-                fontSize: 12,
-                color: C.muted,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-              }}
-            >
-              Vous pourrez en ajouter d'autres et les combiner ensuite
-            </div>
-            {hiddenInput}
-          </div>
-
-          {error && (
-            <div
-              style={{
-                marginTop: 16,
-                padding: "12px 16px",
-                background: "#FCE8EA",
-                border: `1px solid ${C.debit}`,
-                color: C.debit,
-                fontSize: 14,
-              }}
-            >
-              {error}
-            </div>
-          )}
-
-          <div
-            style={{
-              marginTop: 40,
-              fontSize: 13,
-              color: C.muted,
-              lineHeight: 1.6,
-            }}
-          >
-            <Eyebrow>Ce que l'outil détecte</Eyebrow>
-            <ul style={{ marginTop: 12, paddingLeft: 18 }}>
-              <li>Versements espèces (recapitalisation)</li>
-              <li>Paiements et envois par réseau (MoneyGram, Western Union, RIA)</li>
-              <li>Commissions agence (ComSA) et charges groupe (GChgSA)</li>
-              <li>Annulations (ANNUL) et remboursements (Rmb)</li>
-              <li>Évolution quotidienne du volume et du solde</li>
-              <li>Montant moyen par opération et agrégation multi-périodes</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  /* --------- LOADED STATE --------- */
-  return (
-    <div
-      className="ff-body"
-      style={{
+    return /*#__PURE__*/React.createElement("div", {
+      className: "ff-body",
+      style: {
         minHeight: "100vh",
         background: C.paper,
         color: C.ink,
-        padding: "32px 32px 80px",
-      }}
-      onDragOver={(e) => {
+        padding: "40px 24px"
+      }
+    }, /*#__PURE__*/React.createElement("style", null, fontStyle), /*#__PURE__*/React.createElement(Masthead, null), /*#__PURE__*/React.createElement("div", {
+      style: {
+        maxWidth: 720,
+        margin: "60px auto 0"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      onDragOver: e => {
         e.preventDefault();
         setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
+      },
+      onDragLeave: () => setDragOver(false),
+      onDrop: e => {
         e.preventDefault();
         setDragOver(false);
         const file = e.dataTransfer.files?.[0];
         handleFile(file);
-      }}
-    >
-      <style>{fontStyle}</style>
+      },
+      onClick: handleAddClick,
+      style: {
+        border: `1.5px dashed ${dragOver ? C.ink : C.muted}`,
+        background: dragOver ? C.paperDeep : "transparent",
+        padding: "64px 32px",
+        textAlign: "center",
+        cursor: "pointer",
+        transition: "all 0.15s ease"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ff-display",
+      style: {
+        fontSize: 28,
+        color: C.ink,
+        fontWeight: 500
+      }
+    }, "Glissez votre extrait bancaire ici"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 12,
+        color: C.muted,
+        fontSize: 14
+      }
+    }, "ou cliquez pour le s\xE9lectionner \u2014 format CSV"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 28,
+        fontSize: 12,
+        color: C.muted,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase"
+      }
+    }, "Vous pourrez en ajouter d'autres et les combiner ensuite"), hiddenInput), error && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 16,
+        padding: "12px 16px",
+        background: "#FCE8EA",
+        border: `1px solid ${C.debit}`,
+        color: C.debit,
+        fontSize: 14
+      }
+    }, error), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 40,
+        fontSize: 13,
+        color: C.muted,
+        lineHeight: 1.6
+      }
+    }, /*#__PURE__*/React.createElement(Eyebrow, null, "Ce que l'outil d\xE9tecte"), /*#__PURE__*/React.createElement("ul", {
+      style: {
+        marginTop: 12,
+        paddingLeft: 18
+      }
+    }, /*#__PURE__*/React.createElement("li", null, "Versements esp\xE8ces (recapitalisation)"), /*#__PURE__*/React.createElement("li", null, "Paiements et envois par r\xE9seau (MoneyGram, Western Union, RIA)"), /*#__PURE__*/React.createElement("li", null, "Commissions agence (ComSA) et charges groupe (GChgSA)"), /*#__PURE__*/React.createElement("li", null, "Annulations (ANNUL) et remboursements (Rmb)"), /*#__PURE__*/React.createElement("li", null, "\xC9volution quotidienne du volume et du solde"), /*#__PURE__*/React.createElement("li", null, "Montant moyen par op\xE9ration et agr\xE9gation multi-p\xE9riodes")))));
+  }
 
-      <Masthead
-        onAdd={handleAddClick}
-        fileCount={files.length}
-        enabledCount={enabledFiles.length}
-      />
-      {hiddenInput}
-
-      {error && (
-        <div
-          style={{
-            marginTop: 16,
-            padding: "12px 16px",
-            background: "#FCE8EA",
-            border: `1px solid ${C.debit}`,
-            color: C.debit,
-            fontSize: 14,
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {storageWarning && (
-        <div
-          style={{
-            marginTop: 16,
-            padding: "12px 16px",
-            background: "#FCF3CF",
-            border: `1px solid #B8893A`,
-            color: "#7E5109",
-            fontSize: 13,
-          }}
-        >
-          ⚠ La limite de stockage local est atteinte. Les nouveaux fichiers ne
-          seront pas sauvegardés entre les sessions. Supprimez quelques
-          sources anciennes pour libérer de l'espace.
-        </div>
-      )}
-
-      {/* Sources panel */}
-      <SourcesPanel
-        files={files}
-        onToggle={toggleFile}
-        onRemove={removeFile}
-        onAdd={handleAddClick}
-      />
-
-      {/* No active source: explain and stop here */}
-      {!hasEnabled && (
-        <div
-          style={{
-            marginTop: 32,
-            padding: "32px 24px",
-            border: `1px dashed ${C.muted}`,
-            textAlign: "center",
-            color: C.muted,
-            fontSize: 14,
-          }}
-        >
-          Activez au moins une source ci-dessus pour afficher les analyses.
-        </div>
-      )}
-
-      {/* Dashboard: only when at least one source is enabled */}
-      {hasEnabled && a && (
-        <>
-          {/* Statement header */}
-          <div
-            style={{
-              marginTop: 24,
-              padding: "20px 24px",
-              background: C.paperDeep,
-              borderTop: `2px solid ${C.ink}`,
-              borderBottom: `1px solid ${C.hairline}`,
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: "20px 32px",
-            }}
-          >
-            <Field label="Client" value={meta.client || "—"} />
-            <Field
-              label="Compte"
-              value={`${meta.account || "—"} ${meta.currency || ""}`.trim()}
-            />
-            <Field label="Période agrégée" value={meta.period || "—"} />
-            <Field
-              label="Transactions"
-              value={`${a.rowCount}`}
-              mono
-              hint={
-                enabledFiles.length > 1
-                  ? `sur ${enabledFiles.length} sources`
-                  : null
-              }
-            />
-          </div>
-
-          {/* KPI tiles */}
-          <div
-            style={{
-              marginTop: 24,
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-              gap: 16,
-            }}
-          >
-            <Tile
-              label="Volume traité"
-              value={fmtNum(a.volumeTraite, { unit })}
-              sublabel="Paiements + envois (Pmt Total + Env total)"
-              accent={C.ink}
-            />
-            <Tile
-              label="Versements espèces"
-              value={fmtNum(a.totalVersements, { unit })}
-              sublabel={`${a.versementCount} dépôt${a.versementCount > 1 ? "s" : ""} pour recapitalisation`}
-              accent={C.cash}
-            />
-            <Tile
-              label="Commissions agence"
-              value={fmtNum(a.totalCommissions, { unit })}
-              sublabel={`Somme des ComSA · charges groupe ${fmtCompact(a.totalCharges)}`}
-              accent={C.credit}
-            />
-            <Tile
-              label="Variation du solde"
-              value={fmtNum(a.netSolde, { unit, sign: "always" })}
-              sublabel={`Solde fin : ${fmtNum(a.lastBalance, { unit, sign: "always" })}`}
-              accent={a.netSolde >= 0 ? C.credit : C.debit}
-            />
-          </div>
-
-          {/* Tabs */}
-          <div
-            style={{
-              marginTop: 36,
-              display: "flex",
-              gap: 0,
-              borderBottom: `1px solid ${C.hairline}`,
-              flexWrap: "wrap",
-            }}
-          >
-            {[
-              ["reseau", "Par réseau"],
-              ["jour", "Activité quotidienne"],
-              ["categories", "Tous les types"],
-              ["transactions", "Transactions"],
-            ].map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                className="ff-body"
-                style={{
-                  padding: "12px 20px",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom:
-                    tab === id ? `2px solid ${C.ink}` : "2px solid transparent",
-                  color: tab === id ? C.ink : C.muted,
-                  cursor: "pointer",
-                  fontSize: 14,
-                  fontWeight: tab === id ? 600 : 500,
-                  marginBottom: -1,
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          <div style={{ marginTop: 24 }}>
-            {tab === "reseau" && <TabReseau a={a} currency={unit} />}
-            {tab === "jour" && <TabJour a={a} currency={unit} />}
-            {tab === "categories" && <TabCategories a={a} currency={unit} />}
-            {tab === "transactions" && (
-              <TabTransactions
-                rows={filteredRows}
-                allRows={allRows}
-                search={search}
-                setSearch={setSearch}
-                filterNetwork={filterNetwork}
-                setFilterNetwork={setFilterNetwork}
-                filterKind={filterKind}
-                setFilterKind={setFilterKind}
-                currency={unit}
-              />
-            )}
-          </div>
-        </>
-      )}
-
-      <div
-        style={{
-          marginTop: 60,
-          paddingTop: 20,
-          borderTop: `1px solid ${C.hairline}`,
-          fontSize: 11,
-          color: C.muted,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-        }}
-      >
-        Analyse locale · {files.length} source{files.length > 1 ? "s" : ""} ·{" "}
-        {enabledFiles.length} active{enabledFiles.length > 1 ? "s" : ""} · données
-        stockées dans le navigateur
-      </div>
-    </div>
-  );
+  /* --------- LOADED STATE --------- */
+  return /*#__PURE__*/React.createElement("div", {
+    className: "ff-body",
+    style: {
+      minHeight: "100vh",
+      background: C.paper,
+      color: C.ink,
+      padding: "32px 32px 80px"
+    },
+    onDragOver: e => {
+      e.preventDefault();
+      setDragOver(true);
+    },
+    onDragLeave: () => setDragOver(false),
+    onDrop: e => {
+      e.preventDefault();
+      setDragOver(false);
+      const file = e.dataTransfer.files?.[0];
+      handleFile(file);
+    }
+  }, /*#__PURE__*/React.createElement("style", null, fontStyle), /*#__PURE__*/React.createElement(Masthead, {
+    onAdd: handleAddClick,
+    fileCount: files.length,
+    enabledCount: enabledFiles.length
+  }), hiddenInput, error && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      padding: "12px 16px",
+      background: "#FCE8EA",
+      border: `1px solid ${C.debit}`,
+      color: C.debit,
+      fontSize: 14
+    }
+  }, error), storageWarning && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      padding: "12px 16px",
+      background: "#FCF3CF",
+      border: `1px solid #B8893A`,
+      color: "#7E5109",
+      fontSize: 13
+    }
+  }, "\u26A0 La limite de stockage local est atteinte. Les nouveaux fichiers ne seront pas sauvegard\xE9s entre les sessions. Supprimez quelques sources anciennes pour lib\xE9rer de l'espace."), /*#__PURE__*/React.createElement(SourcesPanel, {
+    files: files,
+    onToggle: toggleFile,
+    onRemove: removeFile,
+    onAdd: handleAddClick
+  }), !hasEnabled && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 32,
+      padding: "32px 24px",
+      border: `1px dashed ${C.muted}`,
+      textAlign: "center",
+      color: C.muted,
+      fontSize: 14
+    }
+  }, "Activez au moins une source ci-dessus pour afficher les analyses."), hasEnabled && a && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 24,
+      padding: "20px 24px",
+      background: C.paperDeep,
+      borderTop: `2px solid ${C.ink}`,
+      borderBottom: `1px solid ${C.hairline}`,
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+      gap: "20px 32px"
+    }
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "Client",
+    value: meta.client || "—"
+  }), /*#__PURE__*/React.createElement(Field, {
+    label: "Compte",
+    value: `${meta.account || "—"} ${meta.currency || ""}`.trim()
+  }), /*#__PURE__*/React.createElement(Field, {
+    label: "P\xE9riode agr\xE9g\xE9e",
+    value: meta.period || "—"
+  }), /*#__PURE__*/React.createElement(Field, {
+    label: "Transactions",
+    value: `${a.rowCount}`,
+    mono: true,
+    hint: enabledFiles.length > 1 ? `sur ${enabledFiles.length} sources` : null
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 24,
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement(Tile, {
+    label: "Volume trait\xE9",
+    value: fmtNum(a.volumeTraite, {
+      unit
+    }),
+    sublabel: "Paiements + envois (Pmt Total + Env total)",
+    accent: C.ink
+  }), /*#__PURE__*/React.createElement(Tile, {
+    label: "Versements esp\xE8ces",
+    value: fmtNum(a.totalVersements, {
+      unit
+    }),
+    sublabel: `${a.versementCount} dépôt${a.versementCount > 1 ? "s" : ""} pour recapitalisation`,
+    accent: C.cash
+  }), /*#__PURE__*/React.createElement(Tile, {
+    label: "Commissions agence",
+    value: fmtNum(a.totalCommissions, {
+      unit
+    }),
+    sublabel: `Somme des ComSA · charges groupe ${fmtCompact(a.totalCharges)}`,
+    accent: C.credit
+  }), /*#__PURE__*/React.createElement(Tile, {
+    label: "Variation du solde",
+    value: fmtNum(a.netSolde, {
+      unit,
+      sign: "always"
+    }),
+    sublabel: `Solde fin : ${fmtNum(a.lastBalance, {
+      unit,
+      sign: "always"
+    })}`,
+    accent: a.netSolde >= 0 ? C.credit : C.debit
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 36,
+      display: "flex",
+      gap: 0,
+      borderBottom: `1px solid ${C.hairline}`,
+      flexWrap: "wrap"
+    }
+  }, [["reseau", "Par réseau"], ["jour", "Activité quotidienne"], ["categories", "Tous les types"], ["transactions", "Transactions"]].map(([id, label]) => /*#__PURE__*/React.createElement("button", {
+    key: id,
+    onClick: () => setTab(id),
+    className: "ff-body",
+    style: {
+      padding: "12px 20px",
+      background: "transparent",
+      border: "none",
+      borderBottom: tab === id ? `2px solid ${C.ink}` : "2px solid transparent",
+      color: tab === id ? C.ink : C.muted,
+      cursor: "pointer",
+      fontSize: 14,
+      fontWeight: tab === id ? 600 : 500,
+      marginBottom: -1
+    }
+  }, label))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 24
+    }
+  }, tab === "reseau" && /*#__PURE__*/React.createElement(TabReseau, {
+    a: a,
+    currency: unit
+  }), tab === "jour" && /*#__PURE__*/React.createElement(TabJour, {
+    a: a,
+    currency: unit
+  }), tab === "categories" && /*#__PURE__*/React.createElement(TabCategories, {
+    a: a,
+    currency: unit
+  }), tab === "transactions" && /*#__PURE__*/React.createElement(TabTransactions, {
+    rows: filteredRows,
+    allRows: allRows,
+    search: search,
+    setSearch: setSearch,
+    filterNetwork: filterNetwork,
+    setFilterNetwork: setFilterNetwork,
+    filterKind: filterKind,
+    setFilterKind: setFilterKind,
+    currency: unit
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 60,
+      paddingTop: 20,
+      borderTop: `1px solid ${C.hairline}`,
+      fontSize: 11,
+      color: C.muted,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase"
+    }
+  }, "Analyse locale \xB7 ", files.length, " source", files.length > 1 ? "s" : "", " \xB7", " ", enabledFiles.length, " active", enabledFiles.length > 1 ? "s" : "", " \xB7 donn\xE9es stock\xE9es dans le navigateur"));
 }
 
 /* ----------------------------------------------------------------------------
  *  SUB-COMPONENTS
  * -------------------------------------------------------------------------- */
 
-function Masthead({ onAdd, fileCount, enabledCount }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 16,
-        flexWrap: "wrap",
-      }}
-    >
-      <div>
-        <div
-          className="ff-display"
-          style={{
-            fontSize: 24,
-            fontWeight: 600,
-            color: C.ink,
-            letterSpacing: "-0.02em",
-          }}
-        >
-          Gold Finance
-          <span
-            className="ff-body"
-            style={{
-              fontSize: 12,
-              fontWeight: 500,
-              color: C.muted,
-              marginLeft: 12,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              verticalAlign: "middle",
-            }}
-          >
-            Analyse d'activité bancaire
-          </span>
-        </div>
-        {typeof fileCount === "number" && fileCount > 0 && (
-          <div
-            style={{
-              marginTop: 4,
-              fontSize: 12,
-              color: C.muted,
-            }}
-          >
-            {fileCount} source{fileCount > 1 ? "s" : ""} chargée
-            {fileCount > 1 ? "s" : ""} · {enabledCount} active
-            {enabledCount > 1 ? "s" : ""}
-          </div>
-        )}
-      </div>
-      {onAdd && (
-        <button
-          onClick={onAdd}
-          className="ff-body"
-          style={{
-            padding: "10px 18px",
-            background: C.ink,
-            border: `1px solid ${C.ink}`,
-            color: C.paper,
-            cursor: "pointer",
-            fontSize: 13,
-            fontWeight: 500,
-            letterSpacing: "0.02em",
-          }}
-        >
-          + Ajouter un fichier
-        </button>
-      )}
-    </div>
-  );
+function Masthead({
+  onAdd,
+  fileCount,
+  enabledCount
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 16,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "ff-display",
+    style: {
+      fontSize: 24,
+      fontWeight: 600,
+      color: C.ink,
+      letterSpacing: "-0.02em"
+    }
+  }, "Gold Finance", /*#__PURE__*/React.createElement("span", {
+    className: "ff-body",
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      color: C.muted,
+      marginLeft: 12,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      verticalAlign: "middle"
+    }
+  }, "Analyse d'activit\xE9 bancaire")), typeof fileCount === "number" && fileCount > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 12,
+      color: C.muted
+    }
+  }, fileCount, " source", fileCount > 1 ? "s" : "", " charg\xE9e", fileCount > 1 ? "s" : "", " \xB7 ", enabledCount, " active", enabledCount > 1 ? "s" : "")), onAdd && /*#__PURE__*/React.createElement("button", {
+    onClick: onAdd,
+    className: "ff-body",
+    style: {
+      padding: "10px 18px",
+      background: C.ink,
+      border: `1px solid ${C.ink}`,
+      color: C.paper,
+      cursor: "pointer",
+      fontSize: 13,
+      fontWeight: 500,
+      letterSpacing: "0.02em"
+    }
+  }, "+ Ajouter un fichier"));
 }
-
-function Field({ label, value, mono, hint }) {
-  return (
-    <div>
-      <Eyebrow>{label}</Eyebrow>
-      <div
-        className={mono ? "ff-mono" : "ff-body"}
-        style={{
-          marginTop: 6,
-          fontSize: 15,
-          color: C.ink,
-          fontWeight: 500,
-        }}
-      >
-        {value}
-      </div>
-      {hint && (
-        <div style={{ marginTop: 2, fontSize: 11, color: C.muted }}>
-          {hint}
-        </div>
-      )}
-    </div>
-  );
+function Field({
+  label,
+  value,
+  mono,
+  hint
+}) {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Eyebrow, null, label), /*#__PURE__*/React.createElement("div", {
+    className: mono ? "ff-mono" : "ff-body",
+    style: {
+      marginTop: 6,
+      fontSize: 15,
+      color: C.ink,
+      fontWeight: 500
+    }
+  }, value), hint && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 2,
+      fontSize: 11,
+      color: C.muted
+    }
+  }, hint));
 }
 
 /* ---- SourcesPanel ---- */
-function SourcesPanel({ files, onToggle, onRemove, onAdd }) {
+function SourcesPanel({
+  files,
+  onToggle,
+  onRemove,
+  onAdd
+}) {
   // Sort newest upload first
-  const sorted = [...files].sort((a, b) =>
-    (b.uploadedAt || "").localeCompare(a.uploadedAt || "")
-  );
-
-  return (
-    <div style={{ marginTop: 24 }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          marginBottom: 10,
-        }}
-      >
-        <Eyebrow>Sources</Eyebrow>
-        <span style={{ fontSize: 11, color: C.muted }}>
-          Décochez pour exclure une source du calcul (sans la supprimer)
-        </span>
-      </div>
-
-      <div
-        style={{
-          border: `1px solid ${C.hairline}`,
-          background: C.paper,
-        }}
-      >
-        {sorted.map((f, i) => {
-          const meta = f.parsed?.meta || {};
-          const rowCount = f.parsed?.rows?.length || 0;
-          return (
-            <div
-              key={f.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 16,
-                padding: "12px 16px",
-                borderBottom:
-                  i < sorted.length - 1 ? `1px solid ${C.hairline}` : "none",
-                background: f.enabled ? "transparent" : "#F5F2E8",
-              }}
-            >
-              {/* Toggle */}
-              <button
-                onClick={() => onToggle(f.id)}
-                aria-label={f.enabled ? "Désactiver" : "Activer"}
-                style={{
-                  width: 36,
-                  height: 20,
-                  borderRadius: 10,
-                  background: f.enabled ? C.credit : C.hairline,
-                  border: "none",
-                  position: "relative",
-                  cursor: "pointer",
-                  padding: 0,
-                  flexShrink: 0,
-                  transition: "background 0.15s",
-                }}
-              >
-                <span
-                  style={{
-                    position: "absolute",
-                    top: 2,
-                    left: f.enabled ? 18 : 2,
-                    width: 16,
-                    height: 16,
-                    borderRadius: "50%",
-                    background: "#fff",
-                    transition: "left 0.15s",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
-                  }}
-                />
-              </button>
-
-              {/* Filename + meta */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  className="ff-mono"
-                  style={{
-                    fontSize: 13,
-                    color: f.enabled ? C.ink : C.muted,
-                    fontWeight: 500,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {f.name}
-                  {!f.enabled && (
-                    <span
-                      style={{
-                        fontFamily: "Inter",
-                        fontSize: 11,
-                        marginLeft: 10,
-                        color: C.muted,
-                        textTransform: "uppercase",
-                        letterSpacing: "0.08em",
-                      }}
-                    >
-                      désactivée
-                    </span>
-                  )}
-                </div>
-                <div
-                  style={{
-                    marginTop: 2,
-                    fontSize: 11,
-                    color: C.muted,
-                  }}
-                >
-                  {meta.period || "—"} · {rowCount} opération
-                  {rowCount > 1 ? "s" : ""}
-                  {meta.client ? ` · ${meta.client}` : ""}
-                </div>
-              </div>
-
-              {/* Delete */}
-              <button
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Supprimer définitivement "${f.name}" ? Vous pourrez le ré-uploader plus tard.`
-                    )
-                  ) {
-                    onRemove(f.id);
-                  }
-                }}
-                aria-label="Supprimer"
-                style={{
-                  width: 28,
-                  height: 28,
-                  background: "transparent",
-                  border: `1px solid ${C.hairline}`,
-                  color: C.muted,
-                  cursor: "pointer",
-                  fontSize: 16,
-                  lineHeight: 1,
-                  padding: 0,
-                  flexShrink: 0,
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.color = C.debit;
-                  e.currentTarget.style.borderColor = C.debit;
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.color = C.muted;
-                  e.currentTarget.style.borderColor = C.hairline;
-                }}
-              >
-                ×
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+  const sorted = [...files].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "Sources"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.muted
+    }
+  }, "D\xE9cochez pour exclure une source du calcul (sans la supprimer)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      background: C.paper
+    }
+  }, sorted.map((f, i) => {
+    const meta = f.parsed?.meta || {};
+    const rowCount = f.parsed?.rows?.length || 0;
+    return /*#__PURE__*/React.createElement("div", {
+      key: f.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        padding: "12px 16px",
+        borderBottom: i < sorted.length - 1 ? `1px solid ${C.hairline}` : "none",
+        background: f.enabled ? "transparent" : "#F5F2E8"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => onToggle(f.id),
+      "aria-label": f.enabled ? "Désactiver" : "Activer",
+      style: {
+        width: 36,
+        height: 20,
+        borderRadius: 10,
+        background: f.enabled ? C.credit : C.hairline,
+        border: "none",
+        position: "relative",
+        cursor: "pointer",
+        padding: 0,
+        flexShrink: 0,
+        transition: "background 0.15s"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "absolute",
+        top: 2,
+        left: f.enabled ? 18 : 2,
+        width: 16,
+        height: 16,
+        borderRadius: "50%",
+        background: "#fff",
+        transition: "left 0.15s",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "ff-mono",
+      style: {
+        fontSize: 13,
+        color: f.enabled ? C.ink : C.muted,
+        fontWeight: 500,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, f.name, !f.enabled && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: "Inter",
+        fontSize: 11,
+        marginLeft: 10,
+        color: C.muted,
+        textTransform: "uppercase",
+        letterSpacing: "0.08em"
+      }
+    }, "d\xE9sactiv\xE9e")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 2,
+        fontSize: 11,
+        color: C.muted
+      }
+    }, meta.period || "—", " \xB7 ", rowCount, " op\xE9ration", rowCount > 1 ? "s" : "", meta.client ? ` · ${meta.client}` : "")), /*#__PURE__*/React.createElement("button", {
+      onClick: () => {
+        if (confirm(`Supprimer définitivement "${f.name}" ? Vous pourrez le ré-uploader plus tard.`)) {
+          onRemove(f.id);
+        }
+      },
+      "aria-label": "Supprimer",
+      style: {
+        width: 28,
+        height: 28,
+        background: "transparent",
+        border: `1px solid ${C.hairline}`,
+        color: C.muted,
+        cursor: "pointer",
+        fontSize: 16,
+        lineHeight: 1,
+        padding: 0,
+        flexShrink: 0
+      },
+      onMouseEnter: e => {
+        e.currentTarget.style.color = C.debit;
+        e.currentTarget.style.borderColor = C.debit;
+      },
+      onMouseLeave: e => {
+        e.currentTarget.style.color = C.muted;
+        e.currentTarget.style.borderColor = C.hairline;
+      }
+    }, "\xD7"));
+  })));
 }
 
 /* ---- Tab: Par réseau ---- */
-function TabReseau({ a, currency }) {
+function TabReseau({
+  a,
+  currency
+}) {
   const unit = currency || "XOF";
-  const chartData = a.byNetwork.map((n) => ({
+  const chartData = a.byNetwork.map(n => ({
     name: n.network,
     Paiements: n.paiements,
-    Envois: n.envois,
+    Envois: n.envois
   }));
-
-  return (
-    <div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 24,
-          alignItems: "start",
-        }}
-      >
-        <div
-          style={{
-            border: `1px solid ${C.hairline}`,
-            padding: 20,
-            background: C.paper,
-          }}
-        >
-          <Eyebrow>Volume par réseau · paiements vs envois</Eyebrow>
-          <div style={{ marginTop: 20, height: 320 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={chartData}
-                margin={{ top: 10, right: 10, left: 0, bottom: 10 }}
-              >
-                <CartesianGrid stroke={C.hairline} vertical={false} />
-                <XAxis
-                  dataKey="name"
-                  stroke={C.muted}
-                  tick={{ fontSize: 12, fill: C.inkSoft }}
-                  axisLine={{ stroke: C.hairline }}
-                  tickLine={false}
-                />
-                <YAxis
-                  stroke={C.muted}
-                  tick={{ fontSize: 11, fill: C.muted }}
-                  tickFormatter={(v) => fmtCompact(v)}
-                  axisLine={{ stroke: C.hairline }}
-                  tickLine={false}
-                  width={50}
-                />
-                <Tooltip
-                  cursor={{ fill: C.paperDeep }}
-                  contentStyle={{
-                    background: C.paper,
-                    border: `1px solid ${C.ink}`,
-                    fontSize: 12,
-                    fontFamily: "Inter",
-                  }}
-                  formatter={(v) => fmtNum(v, { unit })}
-                />
-                <Legend
-                  wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
-                  iconType="square"
-                />
-                <Bar dataKey="Paiements" fill={C.credit} />
-                <Bar dataKey="Envois" fill={C.debit} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div
-          style={{
-            border: `1px solid ${C.hairline}`,
-            background: C.paper,
-          }}
-        >
-          <div style={{ padding: "16px 20px 0" }}>
-            <Eyebrow>Détail par réseau</Eyebrow>
-          </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
-            <thead>
-              <tr style={{ borderBottom: `1px solid ${C.hairline}` }}>
-                <Th align="left">Réseau</Th>
-                <Th align="right">Paiements</Th>
-                <Th align="right">Moy. paiement</Th>
-                <Th align="right">Envois</Th>
-                <Th align="right">Moy. envoi</Th>
-                <Th align="right">Commission</Th>
-                <Th align="right">Opér.</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {a.byNetwork.map((n) => (
-                <tr
-                  key={n.network}
-                  style={{ borderBottom: `1px solid ${C.hairline}` }}
-                >
-                  <Td>
-                    <NetworkSwatch network={n.network} />
-                    {n.network}
-                  </Td>
-                  <Td mono align="right" color={C.credit}>
-                    {fmtNum(n.paiements)}
-                  </Td>
-                  <Td mono align="right" color={C.inkSoft}>
-                    {n.paiementsCount > 0 ? fmtNum(n.paiementsMoyen) : "—"}
-                  </Td>
-                  <Td mono align="right" color={C.debit}>
-                    {fmtNum(n.envois)}
-                  </Td>
-                  <Td mono align="right" color={C.inkSoft}>
-                    {n.envoisCount > 0 ? fmtNum(n.envoisMoyen) : "—"}
-                  </Td>
-                  <Td mono align="right">{fmtNum(n.commission)}</Td>
-                  <Td mono align="right" color={C.muted}>{n.count}</Td>
-                </tr>
-              ))}
-              <tr style={{ background: C.paperDeep }}>
-                <Td bold>Total</Td>
-                <Td mono align="right" bold>
-                  {fmtNum(a.byNetwork.reduce((s, n) => s + n.paiements, 0))}
-                </Td>
-                <Td mono align="right" color={C.muted}>—</Td>
-                <Td mono align="right" bold>
-                  {fmtNum(a.byNetwork.reduce((s, n) => s + n.envois, 0))}
-                </Td>
-                <Td mono align="right" color={C.muted}>—</Td>
-                <Td mono align="right" bold>
-                  {fmtNum(a.byNetwork.reduce((s, n) => s + n.commission, 0))}
-                </Td>
-                <Td mono align="right" bold>
-                  {a.byNetwork.reduce((s, n) => s + n.count, 0)}
-                </Td>
-              </tr>
-            </tbody>
-          </table>
-          <div
-            style={{
-              padding: "12px 20px",
-              fontSize: 11,
-              color: C.muted,
-              borderTop: `1px solid ${C.hairline}`,
-            }}
-          >
-            Montants en {unit}. Moyennes calculées sur les lignes "Total" uniquement.
-          </div>
-        </div>
-      </div>
-
-      {/* Annulations / remboursements bandeau */}
-      {(a.annulations > 0 || a.remboursements > 0) && (
-        <div
-          style={{
-            marginTop: 24,
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 16,
-          }}
-        >
-          <Tile
-            label="Annulations (ANNUL)"
-            value={fmtNum(a.annulations, { unit })}
-            sublabel="Volume brut des opérations annulées"
-            accent={C.muted}
-          />
-          <Tile
-            label="Remboursements (Rmb)"
-            value={fmtNum(a.remboursements, { unit })}
-            sublabel="Volume brut des remboursements"
-            accent={C.muted}
-          />
-        </div>
-      )}
-    </div>
-  );
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 24,
+      alignItems: "start"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      padding: 20,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "Volume par r\xE9seau \xB7 paiements vs envois"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 20,
+      height: 320
+    }
+  }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+    width: "100%",
+    height: "100%"
+  }, /*#__PURE__*/React.createElement(BarChart, {
+    data: chartData,
+    margin: {
+      top: 10,
+      right: 10,
+      left: 0,
+      bottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(CartesianGrid, {
+    stroke: C.hairline,
+    vertical: false
+  }), /*#__PURE__*/React.createElement(XAxis, {
+    dataKey: "name",
+    stroke: C.muted,
+    tick: {
+      fontSize: 12,
+      fill: C.inkSoft
+    },
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.muted
+    },
+    tickFormatter: v => fmtCompact(v),
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false,
+    width: 50
+  }), /*#__PURE__*/React.createElement(Tooltip, {
+    cursor: {
+      fill: C.paperDeep
+    },
+    contentStyle: {
+      background: C.paper,
+      border: `1px solid ${C.ink}`,
+      fontSize: 12,
+      fontFamily: "Inter"
+    },
+    formatter: v => fmtNum(v, {
+      unit
+    })
+  }), /*#__PURE__*/React.createElement(Legend, {
+    wrapperStyle: {
+      fontSize: 12,
+      paddingTop: 8
+    },
+    iconType: "square"
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "Paiements",
+    fill: C.credit
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "Envois",
+    fill: C.debit
+  }))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "16px 20px 0"
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "D\xE9tail par r\xE9seau")), /*#__PURE__*/React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse",
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: {
+      borderBottom: `1px solid ${C.hairline}`
+    }
+  }, /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "R\xE9seau"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Paiements"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Moy. paiement"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Envois"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Moy. envoi"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Commission"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Op\xE9r."))), /*#__PURE__*/React.createElement("tbody", null, a.byNetwork.map(n => /*#__PURE__*/React.createElement("tr", {
+    key: n.network,
+    style: {
+      borderBottom: `1px solid ${C.hairline}`
+    }
+  }, /*#__PURE__*/React.createElement(Td, null, /*#__PURE__*/React.createElement(NetworkSwatch, {
+    network: n.network
+  }), n.network), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.credit
+  }, fmtNum(n.paiements)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.inkSoft
+  }, n.paiementsCount > 0 ? fmtNum(n.paiementsMoyen) : "—"), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.debit
+  }, fmtNum(n.envois)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.inkSoft
+  }, n.envoisCount > 0 ? fmtNum(n.envoisMoyen) : "—"), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right"
+  }, fmtNum(n.commission)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.muted
+  }, n.count))), /*#__PURE__*/React.createElement("tr", {
+    style: {
+      background: C.paperDeep
+    }
+  }, /*#__PURE__*/React.createElement(Td, {
+    bold: true
+  }, "Total"), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true
+  }, fmtNum(a.byNetwork.reduce((s, n) => s + n.paiements, 0))), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.muted
+  }, "\u2014"), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true
+  }, fmtNum(a.byNetwork.reduce((s, n) => s + n.envois, 0))), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.muted
+  }, "\u2014"), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true
+  }, fmtNum(a.byNetwork.reduce((s, n) => s + n.commission, 0))), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true
+  }, a.byNetwork.reduce((s, n) => s + n.count, 0))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "12px 20px",
+      fontSize: 11,
+      color: C.muted,
+      borderTop: `1px solid ${C.hairline}`
+    }
+  }, "Montants en ", unit, ". Moyennes calcul\xE9es sur les lignes \"Total\" uniquement."))), (a.annulations > 0 || a.remboursements > 0) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 24,
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement(Tile, {
+    label: "Annulations (ANNUL)",
+    value: fmtNum(a.annulations, {
+      unit
+    }),
+    sublabel: "Volume brut des op\xE9rations annul\xE9es",
+    accent: C.muted
+  }), /*#__PURE__*/React.createElement(Tile, {
+    label: "Remboursements (Rmb)",
+    value: fmtNum(a.remboursements, {
+      unit
+    }),
+    sublabel: "Volume brut des remboursements",
+    accent: C.muted
+  })));
 }
 
 /* ---- Tab: Activité quotidienne ---- */
-function TabJour({ a, currency }) {
+function TabJour({
+  a,
+  currency
+}) {
   const unit = currency || "XOF";
-  return (
-    <div
-      style={{
-        display: "grid",
-        gap: 24,
-      }}
-    >
-      <div
-        style={{
-          border: `1px solid ${C.hairline}`,
-          padding: 20,
-          background: C.paper,
-        }}
-      >
-        <Eyebrow>Volume journalier par réseau</Eyebrow>
-        <div style={{ marginTop: 20, height: 360 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={a.dailyVolume}
-              margin={{ top: 10, right: 20, left: 0, bottom: 10 }}
-            >
-              <CartesianGrid stroke={C.hairline} vertical={false} />
-              <XAxis
-                dataKey="dateLabel"
-                stroke={C.muted}
-                tick={{ fontSize: 11, fill: C.inkSoft }}
-                axisLine={{ stroke: C.hairline }}
-                tickLine={false}
-              />
-              <YAxis
-                stroke={C.muted}
-                tick={{ fontSize: 11, fill: C.muted }}
-                tickFormatter={(v) => fmtCompact(v)}
-                axisLine={{ stroke: C.hairline }}
-                tickLine={false}
-                width={50}
-              />
-              <Tooltip
-                cursor={{ fill: C.paperDeep }}
-                contentStyle={{
-                  background: C.paper,
-                  border: `1px solid ${C.ink}`,
-                  fontSize: 12,
-                }}
-                formatter={(v) => fmtNum(v, { unit })}
-              />
-              <Legend
-                wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
-                iconType="square"
-              />
-              <Bar dataKey="MoneyGram" stackId="a" fill={C.mg} />
-              <Bar dataKey="Western Union" stackId="a" fill={C.wu} />
-              <Bar dataKey="RIA" stackId="a" fill={C.ri} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <div
-        style={{
-          border: `1px solid ${C.hairline}`,
-          padding: 20,
-          background: C.paper,
-        }}
-      >
-        <Eyebrow>Évolution du solde de compte</Eyebrow>
-        <div style={{ marginTop: 20, height: 280 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart
-              data={a.dailyBalance}
-              margin={{ top: 10, right: 20, left: 0, bottom: 10 }}
-            >
-              <CartesianGrid stroke={C.hairline} vertical={false} />
-              <XAxis
-                dataKey="dateLabel"
-                stroke={C.muted}
-                tick={{ fontSize: 11, fill: C.inkSoft }}
-                axisLine={{ stroke: C.hairline }}
-                tickLine={false}
-              />
-              <YAxis
-                stroke={C.muted}
-                tick={{ fontSize: 11, fill: C.muted }}
-                tickFormatter={(v) => fmtCompact(v)}
-                axisLine={{ stroke: C.hairline }}
-                tickLine={false}
-                width={70}
-              />
-              <Tooltip
-                cursor={{ stroke: C.muted, strokeDasharray: "2 2" }}
-                contentStyle={{
-                  background: C.paper,
-                  border: `1px solid ${C.ink}`,
-                  fontSize: 12,
-                }}
-                formatter={(v) => fmtNum(v, { unit, sign: "always" })}
-              />
-              <Line
-                type="monotone"
-                dataKey="solde"
-                stroke={C.ink}
-                strokeWidth={1.5}
-                dot={{ r: 2.5, fill: C.ink }}
-                activeDot={{ r: 4 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    </div>
-  );
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      padding: 20,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "Volume journalier par r\xE9seau"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 20,
+      height: 360
+    }
+  }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+    width: "100%",
+    height: "100%"
+  }, /*#__PURE__*/React.createElement(BarChart, {
+    data: a.dailyVolume,
+    margin: {
+      top: 10,
+      right: 20,
+      left: 0,
+      bottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(CartesianGrid, {
+    stroke: C.hairline,
+    vertical: false
+  }), /*#__PURE__*/React.createElement(XAxis, {
+    dataKey: "dateLabel",
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.inkSoft
+    },
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.muted
+    },
+    tickFormatter: v => fmtCompact(v),
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false,
+    width: 50
+  }), /*#__PURE__*/React.createElement(Tooltip, {
+    cursor: {
+      fill: C.paperDeep
+    },
+    contentStyle: {
+      background: C.paper,
+      border: `1px solid ${C.ink}`,
+      fontSize: 12
+    },
+    formatter: v => fmtNum(v, {
+      unit
+    })
+  }), /*#__PURE__*/React.createElement(Legend, {
+    wrapperStyle: {
+      fontSize: 12,
+      paddingTop: 8
+    },
+    iconType: "square"
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "MoneyGram",
+    stackId: "a",
+    fill: C.mg
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "Western Union",
+    stackId: "a",
+    fill: C.wu
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "RIA",
+    stackId: "a",
+    fill: C.ri
+  }))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      padding: 20,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "\xC9volution du solde de compte"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 20,
+      height: 280
+    }
+  }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+    width: "100%",
+    height: "100%"
+  }, /*#__PURE__*/React.createElement(LineChart, {
+    data: a.dailyBalance,
+    margin: {
+      top: 10,
+      right: 20,
+      left: 0,
+      bottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(CartesianGrid, {
+    stroke: C.hairline,
+    vertical: false
+  }), /*#__PURE__*/React.createElement(XAxis, {
+    dataKey: "dateLabel",
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.inkSoft
+    },
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.muted
+    },
+    tickFormatter: v => fmtCompact(v),
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false,
+    width: 70
+  }), /*#__PURE__*/React.createElement(Tooltip, {
+    cursor: {
+      stroke: C.muted,
+      strokeDasharray: "2 2"
+    },
+    contentStyle: {
+      background: C.paper,
+      border: `1px solid ${C.ink}`,
+      fontSize: 12
+    },
+    formatter: v => fmtNum(v, {
+      unit,
+      sign: "always"
+    })
+  }), /*#__PURE__*/React.createElement(Line, {
+    type: "monotone",
+    dataKey: "solde",
+    stroke: C.ink,
+    strokeWidth: 1.5,
+    dot: {
+      r: 2.5,
+      fill: C.ink
+    },
+    activeDot: {
+      r: 4
+    }
+  }))))));
 }
 
 /* ---- Tab: Tous les types ---- */
-function TabCategories({ a, currency }) {
+function TabCategories({
+  a,
+  currency
+}) {
   const unit = currency || "XOF";
-  return (
-    <div
-      style={{
-        border: `1px solid ${C.hairline}`,
-        background: C.paper,
-      }}
-    >
-      <div style={{ padding: "16px 20px 0" }}>
-        <Eyebrow>Toutes les catégories d'opération</Eyebrow>
-      </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
-        <thead>
-          <tr style={{ borderBottom: `1px solid ${C.hairline}` }}>
-            <Th align="left">Catégorie</Th>
-            <Th align="left">Réseau</Th>
-            <Th align="right">Nb opér.</Th>
-            <Th align="right">Moyenne / opér.</Th>
-            <Th align="right">Somme signée</Th>
-            <Th align="right">Volume (abs)</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {a.categories.map((c) => {
-            const moyenne = c.count > 0 ? c.sumAbs / c.count : 0;
-            return (
-              <tr
-                key={c.category}
-                style={{ borderBottom: `1px solid ${C.hairline}` }}
-              >
-                <Td>
-                  <span style={{ color: C.inkSoft }}>
-                    {[c.kind === "Standard" ? null : c.kind, c.direction, c.subtype]
-                      .filter((x) => x && x !== "—")
-                      .join(" · ")}
-                  </span>
-                </Td>
-                <Td>
-                  <NetworkSwatch network={c.network} />
-                  <span style={{ color: C.inkSoft }}>{c.network}</span>
-                </Td>
-                <Td mono align="right" color={C.muted}>{c.count}</Td>
-                <Td mono align="right" color={C.inkSoft} bold>
-                  {fmtNum(moyenne)}
-                </Td>
-                <Td mono align="right" color={c.sum >= 0 ? C.credit : C.debit}>
-                  {fmtNum(c.sum, { sign: "always" })}
-                </Td>
-                <Td mono align="right">{fmtNum(c.sumAbs)}</Td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <div
-        style={{
-          padding: "12px 20px",
-          fontSize: 11,
-          color: C.muted,
-          borderTop: `1px solid ${C.hairline}`,
-        }}
-      >
-        Montants en {unit}. Moyenne = volume absolu ÷ nombre d'opérations. La somme signée respecte le sens crédit/débit du relevé.
-      </div>
-    </div>
-  );
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "16px 20px 0"
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "Toutes les cat\xE9gories d'op\xE9ration")), /*#__PURE__*/React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse",
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: {
+      borderBottom: `1px solid ${C.hairline}`
+    }
+  }, /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "Cat\xE9gorie"), /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "R\xE9seau"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Nb op\xE9r."), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Moyenne / op\xE9r."), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Somme sign\xE9e"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Volume (abs)"))), /*#__PURE__*/React.createElement("tbody", null, a.categories.map(c => {
+    const moyenne = c.count > 0 ? c.sumAbs / c.count : 0;
+    return /*#__PURE__*/React.createElement("tr", {
+      key: c.category,
+      style: {
+        borderBottom: `1px solid ${C.hairline}`
+      }
+    }, /*#__PURE__*/React.createElement(Td, null, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: C.inkSoft
+      }
+    }, [c.kind === "Standard" ? null : c.kind, c.direction, c.subtype].filter(x => x && x !== "—").join(" · "))), /*#__PURE__*/React.createElement(Td, null, /*#__PURE__*/React.createElement(NetworkSwatch, {
+      network: c.network
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: C.inkSoft
+      }
+    }, c.network)), /*#__PURE__*/React.createElement(Td, {
+      mono: true,
+      align: "right",
+      color: C.muted
+    }, c.count), /*#__PURE__*/React.createElement(Td, {
+      mono: true,
+      align: "right",
+      color: C.inkSoft,
+      bold: true
+    }, fmtNum(moyenne)), /*#__PURE__*/React.createElement(Td, {
+      mono: true,
+      align: "right",
+      color: c.sum >= 0 ? C.credit : C.debit
+    }, fmtNum(c.sum, {
+      sign: "always"
+    })), /*#__PURE__*/React.createElement(Td, {
+      mono: true,
+      align: "right"
+    }, fmtNum(c.sumAbs)));
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "12px 20px",
+      fontSize: 11,
+      color: C.muted,
+      borderTop: `1px solid ${C.hairline}`
+    }
+  }, "Montants en ", unit, ". Moyenne = volume absolu \xF7 nombre d'op\xE9rations. La somme sign\xE9e respecte le sens cr\xE9dit/d\xE9bit du relev\xE9."));
 }
 
 /* ---- Tab: Transactions ---- */
@@ -1747,218 +1681,215 @@ function TabTransactions({
   setFilterNetwork,
   filterKind,
   setFilterKind,
-  currency,
+  currency
 }) {
   const networks = ["Tous", "MoneyGram", "Western Union", "RIA", "Espèces", "Autre"];
   const kinds = ["Tous", "Standard", "Versement", "Annulation", "Remboursement"];
-
-  const totalShown = rows.reduce(
-    (acc, r) => {
-      if (r.amount > 0) acc.cr += r.amount;
-      else acc.db += Math.abs(r.amount);
-      return acc;
-    },
-    { cr: 0, db: 0 }
-  );
-
-  return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          flexWrap: "wrap",
-          marginBottom: 16,
-          alignItems: "center",
-        }}
-      >
-        <input
-          type="text"
-          placeholder="Rechercher dans libellé ou référence…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="ff-body"
-          style={{
-            flex: "1 1 280px",
-            padding: "10px 14px",
-            background: C.paper,
-            border: `1px solid ${C.hairline}`,
-            color: C.ink,
-            fontSize: 14,
-            outline: "none",
-          }}
-        />
-        <Select
-          value={filterNetwork}
-          onChange={setFilterNetwork}
-          options={networks}
-          label="Réseau"
-        />
-        <Select
-          value={filterKind}
-          onChange={setFilterKind}
-          options={kinds}
-          label="Type"
-        />
-      </div>
-
-      <div
-        style={{
-          fontSize: 12,
-          color: C.muted,
-          marginBottom: 12,
-        }}
-      >
-        {rows.length} sur {allRows.length} opérations · crédits{" "}
-        <span style={{ color: C.credit, fontWeight: 500 }}>
-          {fmtNum(totalShown.cr)}
-        </span>{" "}
-        · débits{" "}
-        <span style={{ color: C.debit, fontWeight: 500 }}>
-          {fmtNum(totalShown.db)}
-        </span>
-      </div>
-
-      <div
-        style={{
-          border: `1px solid ${C.hairline}`,
-          background: C.paper,
-          maxHeight: 560,
-          overflow: "auto",
-        }}
-      >
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead
-            style={{
-              position: "sticky",
-              top: 0,
-              background: C.paperDeep,
-              borderBottom: `1px solid ${C.ink}`,
-            }}
-          >
-            <tr>
-              <Th align="left">Date</Th>
-              <Th align="left">Référence</Th>
-              <Th align="left">Libellé</Th>
-              <Th align="left">Réseau</Th>
-              <Th align="right">Montant</Th>
-              <Th align="right">Solde</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr
-                key={r.idx}
-                style={{ borderBottom: `1px solid ${C.hairline}` }}
-              >
-                <Td mono>{r.opDate}</Td>
-                <Td mono color={C.muted}>{r.ref}</Td>
-                <Td>
-                  <span style={{ fontSize: 13 }}>{r.libelle}</span>
-                </Td>
-                <Td>
-                  <NetworkSwatch network={r.network} />
-                  <span style={{ fontSize: 12, color: C.inkSoft }}>
-                    {r.network}
-                  </span>
-                </Td>
-                <Td
-                  mono
-                  align="right"
-                  color={r.amount >= 0 ? C.credit : C.debit}
-                  bold
-                >
-                  {fmtNum(r.amount, { sign: "always" })}
-                </Td>
-                <Td mono align="right" color={C.muted}>
-                  {fmtNum(r.balance, { sign: "always" })}
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+  const totalShown = rows.reduce((acc, r) => {
+    if (r.amount > 0) acc.cr += r.amount;else acc.db += Math.abs(r.amount);
+    return acc;
+  }, {
+    cr: 0,
+    db: 0
+  });
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      flexWrap: "wrap",
+      marginBottom: 16,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    placeholder: "Rechercher dans libell\xE9 ou r\xE9f\xE9rence\u2026",
+    value: search,
+    onChange: e => setSearch(e.target.value),
+    className: "ff-body",
+    style: {
+      flex: "1 1 280px",
+      padding: "10px 14px",
+      background: C.paper,
+      border: `1px solid ${C.hairline}`,
+      color: C.ink,
+      fontSize: 14,
+      outline: "none"
+    }
+  }), /*#__PURE__*/React.createElement(Select, {
+    value: filterNetwork,
+    onChange: setFilterNetwork,
+    options: networks,
+    label: "R\xE9seau"
+  }), /*#__PURE__*/React.createElement(Select, {
+    value: filterKind,
+    onChange: setFilterKind,
+    options: kinds,
+    label: "Type"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.muted,
+      marginBottom: 12
+    }
+  }, rows.length, " sur ", allRows.length, " op\xE9rations \xB7 cr\xE9dits", " ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.credit,
+      fontWeight: 500
+    }
+  }, fmtNum(totalShown.cr)), " ", "\xB7 d\xE9bits", " ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.debit,
+      fontWeight: 500
+    }
+  }, fmtNum(totalShown.db))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      background: C.paper,
+      maxHeight: 560,
+      overflow: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse"
+    }
+  }, /*#__PURE__*/React.createElement("thead", {
+    style: {
+      position: "sticky",
+      top: 0,
+      background: C.paperDeep,
+      borderBottom: `1px solid ${C.ink}`
+    }
+  }, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "Date"), /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "R\xE9f\xE9rence"), /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "Libell\xE9"), /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "R\xE9seau"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Montant"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Solde"))), /*#__PURE__*/React.createElement("tbody", null, rows.map(r => /*#__PURE__*/React.createElement("tr", {
+    key: r.idx,
+    style: {
+      borderBottom: `1px solid ${C.hairline}`
+    }
+  }, /*#__PURE__*/React.createElement(Td, {
+    mono: true
+  }, r.opDate), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    color: C.muted
+  }, r.ref), /*#__PURE__*/React.createElement(Td, null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13
+    }
+  }, r.libelle)), /*#__PURE__*/React.createElement(Td, null, /*#__PURE__*/React.createElement(NetworkSwatch, {
+    network: r.network
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.inkSoft
+    }
+  }, r.network)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: r.amount >= 0 ? C.credit : C.debit,
+    bold: true
+  }, fmtNum(r.amount, {
+    sign: "always"
+  })), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.muted
+  }, fmtNum(r.balance, {
+    sign: "always"
+  }))))))));
 }
-
-function Select({ value, onChange, options, label }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ fontSize: 12, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-        {label}
-      </span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="ff-body"
-        style={{
-          padding: "8px 12px",
-          background: C.paper,
-          border: `1px solid ${C.hairline}`,
-          color: C.ink,
-          fontSize: 14,
-          outline: "none",
-          cursor: "pointer",
-        }}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
+function Select({
+  value,
+  onChange,
+  options,
+  label
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.muted,
+      textTransform: "uppercase",
+      letterSpacing: "0.08em"
+    }
+  }, label), /*#__PURE__*/React.createElement("select", {
+    value: value,
+    onChange: e => onChange(e.target.value),
+    className: "ff-body",
+    style: {
+      padding: "8px 12px",
+      background: C.paper,
+      border: `1px solid ${C.hairline}`,
+      color: C.ink,
+      fontSize: 14,
+      outline: "none",
+      cursor: "pointer"
+    }
+  }, options.map(o => /*#__PURE__*/React.createElement("option", {
+    key: o,
+    value: o
+  }, o))));
 }
 
 /* ---- Atoms ---- */
-function Th({ children, align = "left" }) {
-  return (
-    <th
-      style={{
-        padding: "10px 14px",
-        textAlign: align,
-        fontSize: 11,
-        fontWeight: 500,
-        color: C.muted,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        fontFamily: "Inter, sans-serif",
-      }}
-    >
-      {children}
-    </th>
-  );
+function Th({
+  children,
+  align = "left"
+}) {
+  return /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "10px 14px",
+      textAlign: align,
+      fontSize: 11,
+      fontWeight: 500,
+      color: C.muted,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      fontFamily: "Inter, sans-serif"
+    }
+  }, children);
 }
-
-function Td({ children, align = "left", mono, color, bold }) {
-  return (
-    <td
-      style={{
-        padding: "10px 14px",
-        textAlign: align,
-        fontSize: 13,
-        color: color || C.ink,
-        fontWeight: bold ? 600 : 400,
-        fontFamily: mono
-          ? "'JetBrains Mono', ui-monospace, monospace"
-          : "Inter, sans-serif",
-        fontVariantNumeric: mono ? "tabular-nums" : undefined,
-      }}
-    >
-      {children}
-    </td>
-  );
+function Td({
+  children,
+  align = "left",
+  mono,
+  color,
+  bold
+}) {
+  return /*#__PURE__*/React.createElement("td", {
+    style: {
+      padding: "10px 14px",
+      textAlign: align,
+      fontSize: 13,
+      color: color || C.ink,
+      fontWeight: bold ? 600 : 400,
+      fontFamily: mono ? "'JetBrains Mono', ui-monospace, monospace" : "Inter, sans-serif",
+      fontVariantNumeric: mono ? "tabular-nums" : undefined
+    }
+  }, children);
 }
-
 
 /* ============================================================================
  *  MOUNT
  * ========================================================================== */
 const container = document.getElementById('root');
 const root = ReactDOM.createRoot(container);
-root.render(<GoldFinanceAnalyse />);
+root.render(React.createElement(GoldFinanceAnalyse));
   </script>
 </body>
 </html>
