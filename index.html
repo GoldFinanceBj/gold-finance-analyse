@@ -74,7 +74,7 @@
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, LineChart, Line, Legend,
+  ResponsiveContainer, LineChart, Line, Legend, ComposedChart,
 } = Recharts;
 // Papa is available as window.Papa
 
@@ -155,18 +155,36 @@ function dateKey(str) {
   return `${y}-${mo}-${da}`;
 }
 
-// Categorise a Libellé into { kind, direction, network, subtype }.
+// Helper — map a 2-letter network code to a full network name.
+function networkFromCode(code) {
+  if (code === "MG") return "MoneyGram";
+  if (code === "WU") return "Western Union";
+  if (code === "RI") return "RIA";
+  return "Autre";
+}
+
+// Categorise a Libellé into { kind, direction, network, subtype, networkCode }.
+// Robust to the various spellings the bank uses across periods:
+//   "Pmt ComSA MG"      "Pmt Com SA MG"      (with or without space)
+//   "Env GChgSA WU"     "Env GChg SAg WU"    "Env GChg SA WU"
+//   "Env total WU"      "Env WU"             (with or without explicit "Total")
+//   "Env ComSA WU"      "Com SA Env WU"      (regular OR reversed order)
+//   ANNUL <anything>    Rmb <anything>
+//   Plus: VERSEMENT ESPECES, PAIEMENT CHEQUE, RBMT BONUS CAMPAGNE.
 function parseLibelle(libelle) {
-  if (!libelle) return {
+  const unknown = {
     kind: "Autre",
     direction: "—",
     network: "Autre",
-    subtype: "—",
-    networkCode: "?"
+    networkCode: "?",
+    subtype: "—"
   };
+  if (!libelle) return unknown;
   const raw = String(libelle).trim();
+
+  // ── Special non-transfer operations ──────────────────────────────────────
   if (/^VERSEMENT\s+ESPECES/i.test(raw)) {
-    const m = raw.match(/PAR:\s*(.+)$/i);
+    const m = raw.match(/PAR:\s*(.+?)\s*$/i);
     return {
       kind: "Versement",
       direction: "Dépôt",
@@ -176,43 +194,89 @@ function parseLibelle(libelle) {
       counterparty: m ? m[1].trim() : ""
     };
   }
+  if (/^PAIEMENT\s+CHEQUE/i.test(raw)) {
+    const m = raw.match(/FAVEUR:\s*(.+?)\s*$/i);
+    return {
+      kind: "Chèque",
+      direction: "Sortie",
+      network: "Chèque",
+      networkCode: "CHQ",
+      subtype: "Paiement chèque",
+      counterparty: m ? m[1].trim() : ""
+    };
+  }
+  if (/^RBMT|BONUS\s+CAMPAGNE/i.test(raw)) {
+    const netMatch = raw.match(/\b(MG|WU|RI)\b/);
+    const code = netMatch ? netMatch[1].toUpperCase() : "?";
+    return {
+      kind: "Bonus",
+      direction: "Recette",
+      network: networkFromCode(code),
+      networkCode: code,
+      subtype: "Bonus campagne"
+    };
+  }
+  if (/^FRAIS\s/i.test(raw)) {
+    return {
+      kind: "Frais",
+      direction: "Sortie",
+      network: "Banque",
+      networkCode: "BNK",
+      subtype: "Frais bancaires"
+    };
+  }
+
+  // ── Standard transfer operations (with ANNUL or Rmb modifiers) ────────────
   let str = raw;
   let kind = "Standard";
-  let isRmb = false;
   if (/^ANNUL\s/i.test(str)) {
     kind = "Annulation";
     str = str.replace(/^ANNUL\s+/i, "");
   } else if (/^Rmb\s/i.test(str)) {
     kind = "Remboursement";
-    isRmb = true;
     str = str.replace(/^Rmb\s+/i, "");
   }
 
-  // Standard pattern: Pmt|Env <subtype> <MG|WU|RI> ...
-  // Rmb pattern (no direction): <subtype> <MG|WU|RI> ...
-  let direction, subRaw, code;
-  const stdMatch = str.match(/^(Pmt|Env)\s+(\w+)\s+(MG|WU|RI)\b/i);
-  const rmbMatch = isRmb && str.match(/^(\w+)\s+(MG|WU|RI)\b/i);
-  if (stdMatch) {
-    direction = stdMatch[1].toLowerCase() === "pmt" ? "Paiement" : "Envoi";
-    subRaw = stdMatch[2];
-    code = stdMatch[3].toUpperCase();
-  } else if (rmbMatch) {
-    direction = "—"; // refund has no explicit direction
-    subRaw = rmbMatch[1];
-    code = rmbMatch[2].toUpperCase();
-  } else {
+  // Strip trailing "<date> P FINANCE…" stuff
+  str = str.replace(/\s+\d{1,2}\/\d{1,2}\/\d{4}.*$/, "");
+
+  // Locate the network code (MG, WU, RI) — required
+  const netMatch = str.match(/\b(MG|WU|RI)\b/);
+  if (!netMatch) {
     return {
       kind,
       direction: "—",
       network: "Autre",
       networkCode: "?",
-      subtype: raw.slice(0, 24)
+      subtype: raw.slice(0, 30)
     };
   }
-  const sub = subRaw.toLowerCase();
-  const subtype = sub === "total" ? "Total" : sub === "comsa" || sub === "com" ? "Commission" : sub === "gchgsa" ? "Charge groupe" : subRaw;
-  const network = code === "MG" ? "MoneyGram" : code === "WU" ? "Western Union" : "RIA";
+  const code = netMatch[1].toUpperCase();
+  const network = networkFromCode(code);
+
+  // Locate direction (Pmt or Env) — optional (Rmb forms often omit it)
+  const dirMatch = str.match(/\b(Pmt|Env)\b/i);
+  const direction = dirMatch ? dirMatch[1].toLowerCase() === "pmt" ? "Paiement" : "Envoi" : "—";
+
+  // Locate subtype — check in order of specificity. Each pattern
+  // tolerates "X SA", "X SAg", "XSA", or just "X".
+  let subtype;
+  if (/\b(?:Com\s+SA|ComSA|Com)\b/i.test(str)) {
+    subtype = "Commission";
+  } else if (/\b(?:GChg\s+SAg?|GChgSA|GChg)\b/i.test(str)) {
+    subtype = "Charge groupe";
+  } else if (/\b(?:PChg\s+SAg?|PChgSA|PChg)\b/i.test(str)) {
+    subtype = "Charge petite";
+  } else if (/\b(?:CChg\s+SAg?|CChgSA|CChg)\b/i.test(str)) {
+    subtype = "Charge C";
+  } else if (/\bTotal\b/i.test(str)) {
+    subtype = "Total";
+  } else if (dirMatch) {
+    // "Env WU" with no explicit subtype = same as "Env Total WU"
+    subtype = "Total";
+  } else {
+    subtype = "—";
+  }
   return {
     kind,
     direction,
@@ -360,6 +424,12 @@ function buildAnalytics(rows) {
   const comRows = rows.filter(isAgencyCommission);
   const totalCommissions = comRows.reduce((s, r) => s + Math.abs(r.amount), 0);
 
+  // Transactions clients = chaque ligne "Total" (Pmt ou Env), hors annulations/remb.
+  // = nombre d'envois/paiements traités par l'agence
+  const transactionRows = rows.filter(r => r.subtype === "Total" && (r.direction === "Paiement" || r.direction === "Envoi") && r.kind !== "Annulation" && r.kind !== "Remboursement");
+  const transactionCount = transactionRows.length;
+  const avgCommissionPerTransaction = transactionCount > 0 ? totalCommissions / transactionCount : 0;
+
   // Charges groupe (GChgSA) — abs sum
   const chgRows = rows.filter(r => r.subtype === "Charge groupe");
   const totalCharges = chgRows.reduce((s, r) => s + Math.abs(r.amount), 0);
@@ -400,6 +470,57 @@ function buildAnalytics(rows) {
       volume: pmtTotal + Math.abs(envTotal)
     };
   });
+
+  // Monthly aggregation — for the "Par mois" tab
+  // Each row is grouped by YYYY-MM (from opDateKey "YYYY-MM-DD")
+  const MONTHS_FR = ["jan", "fév", "mar", "avr", "mai", "juin", "juil", "août", "sep", "oct", "nov", "déc"];
+  const monthMap = new Map();
+  rows.forEach(r => {
+    if (!r.opDateKey) return;
+    const mk = r.opDateKey.slice(0, 7); // "2026-06"
+    if (!monthMap.has(mk)) {
+      const [yy, mm] = mk.split("-");
+      monthMap.set(mk, {
+        monthKey: mk,
+        monthLabel: `${MONTHS_FR[parseInt(mm, 10) - 1]} ${yy}`,
+        // Commission components (5 buckets defined by isAgencyCommission)
+        pmtComMG: 0,
+        pmtComWU: 0,
+        pmtComRI: 0,
+        envChgWU: 0,
+        envComMG: 0,
+        commission: 0,
+        // Transactions = lignes Total non-annulées
+        transactionCount: 0,
+        volumeTraite: 0,
+        versements: 0,
+        avgCommissionPerTransaction: 0
+      });
+    }
+    const slot = monthMap.get(mk);
+    if (isAgencyCommission(r)) {
+      const v = Math.abs(r.amount);
+      slot.commission += v;
+      if (r.direction === "Paiement" && r.subtype === "Commission") {
+        if (r.network === "MoneyGram") slot.pmtComMG += v;else if (r.network === "Western Union") slot.pmtComWU += v;else if (r.network === "RIA") slot.pmtComRI += v;
+      } else if (r.direction === "Envoi" && r.subtype === "Charge groupe" && r.network === "Western Union") {
+        slot.envChgWU += v;
+      } else if (r.direction === "Envoi" && r.subtype === "Commission" && r.network === "MoneyGram") {
+        slot.envComMG += v;
+      }
+    }
+    if (r.subtype === "Total" && (r.direction === "Paiement" || r.direction === "Envoi") && r.kind !== "Annulation" && r.kind !== "Remboursement") {
+      slot.transactionCount += 1;
+      slot.volumeTraite += Math.abs(r.amount);
+    }
+    if (r.kind === "Versement") {
+      slot.versements += r.amount;
+    }
+  });
+  const byMonth = [...monthMap.values()].map(m => ({
+    ...m,
+    avgCommissionPerTransaction: m.transactionCount > 0 ? m.commission / m.transactionCount : 0
+  })).sort((a, b) => a.monthKey.localeCompare(b.monthKey));
 
   // Daily activity: sum of |Total| amounts by network
   const dayMap = new Map();
@@ -465,9 +586,12 @@ function buildAnalytics(rows) {
     volumeTraite,
     totalCommissions,
     totalCharges,
+    transactionCount,
+    avgCommissionPerTransaction,
     credits,
     debits,
     byNetwork,
+    byMonth,
     dailyVolume,
     dailyBalance,
     categories,
@@ -937,7 +1061,9 @@ function GoldFinanceAnalyse() {
     value: fmtNum(a.totalCommissions, {
       unit
     }),
-    sublabel: "Pmt ComSA (3 r\xE9seaux) + Env GChgSA WU + Env ComSA MG",
+    sublabel: `Moy. ${fmtNum(a.avgCommissionPerTransaction, {
+      unit
+    })} / transaction · ${a.transactionCount} transaction${a.transactionCount > 1 ? "s" : ""}`,
     accent: C.credit
   }), /*#__PURE__*/React.createElement(Tile, {
     label: "Variation du solde",
@@ -958,7 +1084,7 @@ function GoldFinanceAnalyse() {
       borderBottom: `1px solid ${C.hairline}`,
       flexWrap: "wrap"
     }
-  }, [["reseau", "Par réseau"], ["jour", "Activité quotidienne"], ["categories", "Tous les types"], ["transactions", "Transactions"]].map(([id, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["reseau", "Par réseau"], ["mois", "Par mois"], ["jour", "Activité quotidienne"], ["categories", "Tous les types"], ["transactions", "Transactions"]].map(([id, label]) => /*#__PURE__*/React.createElement("button", {
     key: id,
     onClick: () => setTab(id),
     className: "ff-body",
@@ -978,6 +1104,9 @@ function GoldFinanceAnalyse() {
       marginTop: 24
     }
   }, tab === "reseau" && /*#__PURE__*/React.createElement(TabReseau, {
+    a: a,
+    currency: unit
+  }), tab === "mois" && /*#__PURE__*/React.createElement(TabMois, {
     a: a,
     currency: unit
   }), tab === "jour" && /*#__PURE__*/React.createElement(TabJour, {
@@ -1433,6 +1562,364 @@ function TabReseau({
     sublabel: "Volume brut des remboursements",
     accent: C.muted
   })));
+}
+
+/* ---- Tab: Par mois ---- */
+function TabMois({
+  a,
+  currency
+}) {
+  const unit = currency || "XOF";
+  const months = a.byMonth || [];
+
+  // Colors keyed to network family (Pmt + Env from same network share a hue)
+  const COMP_COLORS = {
+    pmtComWU: C.wu,
+    // slate
+    envChgWU: "#1F3A5A",
+    // darker slate
+    pmtComMG: C.mg,
+    // gold
+    envComMG: "#8B6308",
+    // darker gold
+    pmtComRI: C.ri // aubergine
+  };
+  const COMP_LABELS = {
+    pmtComWU: "Pmt ComSA WU",
+    envChgWU: "Env GChgSA WU",
+    pmtComMG: "Pmt ComSA MG",
+    envComMG: "Env ComSA MG",
+    pmtComRI: "Pmt ComSA RI"
+  };
+
+  // Totals row for the table footer
+  const totals = months.reduce((acc, m) => {
+    acc.commission += m.commission;
+    acc.transactionCount += m.transactionCount;
+    acc.volumeTraite += m.volumeTraite;
+    acc.versements += m.versements;
+    return acc;
+  }, {
+    commission: 0,
+    transactionCount: 0,
+    volumeTraite: 0,
+    versements: 0
+  });
+  totals.avgCommission = totals.transactionCount > 0 ? totals.commission / totals.transactionCount : 0;
+  if (months.length === 0) {
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: 24,
+        border: `1px dashed ${C.muted}`,
+        color: C.muted,
+        textAlign: "center"
+      }
+    }, "Aucune op\xE9ration dat\xE9e n'a \xE9t\xE9 d\xE9tect\xE9e.");
+  }
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      padding: 20,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "Commission agence par mois \xB7 ventil\xE9e par composante"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 20,
+      height: 360
+    }
+  }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+    width: "100%",
+    height: "100%"
+  }, /*#__PURE__*/React.createElement(BarChart, {
+    data: months,
+    margin: {
+      top: 10,
+      right: 20,
+      left: 0,
+      bottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(CartesianGrid, {
+    stroke: C.hairline,
+    vertical: false
+  }), /*#__PURE__*/React.createElement(XAxis, {
+    dataKey: "monthLabel",
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.inkSoft
+    },
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.muted
+    },
+    tickFormatter: v => fmtCompact(v),
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false,
+    width: 50
+  }), /*#__PURE__*/React.createElement(Tooltip, {
+    cursor: {
+      fill: C.paperDeep
+    },
+    contentStyle: {
+      background: C.paper,
+      border: `1px solid ${C.ink}`,
+      fontSize: 12
+    },
+    formatter: v => fmtNum(v, {
+      unit
+    })
+  }), /*#__PURE__*/React.createElement(Legend, {
+    wrapperStyle: {
+      fontSize: 11,
+      paddingTop: 8
+    },
+    iconType: "square"
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "pmtComWU",
+    stackId: "commission",
+    fill: COMP_COLORS.pmtComWU,
+    name: COMP_LABELS.pmtComWU
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "envChgWU",
+    stackId: "commission",
+    fill: COMP_COLORS.envChgWU,
+    name: COMP_LABELS.envChgWU
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "pmtComMG",
+    stackId: "commission",
+    fill: COMP_COLORS.pmtComMG,
+    name: COMP_LABELS.pmtComMG
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "envComMG",
+    stackId: "commission",
+    fill: COMP_COLORS.envComMG,
+    name: COMP_LABELS.envComMG
+  }), /*#__PURE__*/React.createElement(Bar, {
+    dataKey: "pmtComRI",
+    stackId: "commission",
+    fill: COMP_COLORS.pmtComRI,
+    name: COMP_LABELS.pmtComRI
+  }))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      padding: 20,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "Volume trait\xE9, commission & ticket moyen par mois"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 20,
+      height: 320
+    }
+  }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+    width: "100%",
+    height: "100%"
+  }, /*#__PURE__*/React.createElement(ComposedChart, {
+    data: months,
+    margin: {
+      top: 10,
+      right: 20,
+      left: 0,
+      bottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(CartesianGrid, {
+    stroke: C.hairline,
+    vertical: false
+  }), /*#__PURE__*/React.createElement(XAxis, {
+    dataKey: "monthLabel",
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.inkSoft
+    },
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    yAxisId: "left",
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.muted
+    },
+    tickFormatter: v => fmtCompact(v),
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false,
+    width: 60
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    yAxisId: "right",
+    orientation: "right",
+    stroke: C.muted,
+    tick: {
+      fontSize: 11,
+      fill: C.muted
+    },
+    tickFormatter: v => fmtCompact(v),
+    axisLine: {
+      stroke: C.hairline
+    },
+    tickLine: false,
+    width: 50
+  }), /*#__PURE__*/React.createElement(Tooltip, {
+    cursor: {
+      fill: C.paperDeep
+    },
+    contentStyle: {
+      background: C.paper,
+      border: `1px solid ${C.ink}`,
+      fontSize: 12
+    },
+    formatter: v => fmtNum(v, {
+      unit
+    })
+  }), /*#__PURE__*/React.createElement(Legend, {
+    wrapperStyle: {
+      fontSize: 11,
+      paddingTop: 8
+    },
+    iconType: "rect"
+  }), /*#__PURE__*/React.createElement(Bar, {
+    yAxisId: "left",
+    dataKey: "volumeTraite",
+    fill: C.ink,
+    fillOpacity: 0.12,
+    name: "Volume trait\xE9"
+  }), /*#__PURE__*/React.createElement(Line, {
+    yAxisId: "right",
+    type: "monotone",
+    dataKey: "commission",
+    stroke: C.credit,
+    strokeWidth: 2,
+    dot: {
+      r: 3,
+      fill: C.credit
+    },
+    name: "Commission agence"
+  }), /*#__PURE__*/React.createElement(Line, {
+    yAxisId: "right",
+    type: "monotone",
+    dataKey: "avgCommissionPerTransaction",
+    stroke: C.debit,
+    strokeWidth: 1.5,
+    strokeDasharray: "4 3",
+    dot: {
+      r: 2,
+      fill: C.debit
+    },
+    name: "Moy. / transaction"
+  })))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      fontSize: 11,
+      color: C.muted
+    }
+  }, "Barres : volume trait\xE9 (\xE9chelle gauche) \u2014 Courbes : commission totale et moyenne par transaction (\xE9chelle droite).")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.hairline}`,
+      background: C.paper
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "16px 20px 0"
+    }
+  }, /*#__PURE__*/React.createElement(Eyebrow, null, "D\xE9tail mensuel")), /*#__PURE__*/React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse",
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: {
+      borderBottom: `1px solid ${C.hairline}`
+    }
+  }, /*#__PURE__*/React.createElement(Th, {
+    align: "left"
+  }, "Mois"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Nb tx"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Volume trait\xE9"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Commission"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Moy. / tx"), /*#__PURE__*/React.createElement(Th, {
+    align: "right"
+  }, "Versements"))), /*#__PURE__*/React.createElement("tbody", null, months.map(m => /*#__PURE__*/React.createElement("tr", {
+    key: m.monthKey,
+    style: {
+      borderBottom: `1px solid ${C.hairline}`
+    }
+  }, /*#__PURE__*/React.createElement(Td, null, m.monthLabel), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.muted
+  }, m.transactionCount), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right"
+  }, fmtNum(m.volumeTraite)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.credit,
+    bold: true
+  }, fmtNum(m.commission)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.inkSoft
+  }, m.transactionCount > 0 ? fmtNum(m.avgCommissionPerTransaction) : "—"), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    color: C.cash
+  }, m.versements > 0 ? fmtNum(m.versements) : "—"))), /*#__PURE__*/React.createElement("tr", {
+    style: {
+      background: C.paperDeep
+    }
+  }, /*#__PURE__*/React.createElement(Td, {
+    bold: true
+  }, "Total (", months.length, " mois)"), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true
+  }, totals.transactionCount), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true
+  }, fmtNum(totals.volumeTraite)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true,
+    color: C.credit
+  }, fmtNum(totals.commission)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true
+  }, fmtNum(totals.avgCommission)), /*#__PURE__*/React.createElement(Td, {
+    mono: true,
+    align: "right",
+    bold: true,
+    color: C.cash
+  }, fmtNum(totals.versements))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "12px 20px",
+      fontSize: 11,
+      color: C.muted,
+      borderTop: `1px solid ${C.hairline}`
+    }
+  }, "Montants en ", unit, ". \"Nb tx\" = nombre de lignes Pmt Total + Env total non annul\xE9es. \"Moy. / tx\" = commission \xF7 nb tx du mois.")));
 }
 
 /* ---- Tab: Activité quotidienne ---- */
